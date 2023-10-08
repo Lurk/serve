@@ -1,0 +1,15 @@
+[package]
+name = "serve_dir"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = "*"
+tower = "*"
+tower-http = { version = "*", features = ["fs", "trace"] }
+tracing = "*"
+tracing-subscriber = "*"
+tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
+clap = { version = "4.3.23", features = ["derive"] }
