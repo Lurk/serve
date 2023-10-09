@@ -1,5 +1,5 @@
 [package]
-name = "serve_dir"
+name = "serve"
 version = "0.1.0"
 edition = "2021"
 
