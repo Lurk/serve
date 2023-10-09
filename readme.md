@@ -13,3 +13,7 @@ cargo install --git https://github.com/Lurk/serve serve
 ```shell
 serve --path=./static
 ```
+
+## Minimum supported Rust version
+
+serve MSRV is 1.70
