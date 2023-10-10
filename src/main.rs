@@ -3,12 +3,11 @@ use clap::Parser;
 use std::{net::SocketAddr, path::PathBuf};
 use tower_http::{services::ServeDir, trace::TraceLayer};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
 struct Args {
-    /// path to the project directory
-    #[arg(short, long)]
-    path: PathBuf,
+    /// path to the directory to serve. Defaults to the current directory.
+    path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -17,7 +16,7 @@ async fn main() {
         .with_max_level(tracing::Level::DEBUG)
         .init();
     let args = Args::parse();
-    let service = ServeDir::new(&args.path);
+    let service = ServeDir::new(args.path.unwrap_or(".".into()));
     let app = Router::new()
         .nest_service("/", service)
         .layer(TraceLayer::new_for_http());

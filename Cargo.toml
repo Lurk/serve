@@ -1,9 +1,15 @@
 [package]
 name = "serve"
-version = "0.1.1"
+authors = ["Serhiy Barhamon"]
+description = "A simple static file server."
+rust-version = "1.70.0"
+repository = "https://github.com/Lurk/serve.git"
+license = "MIT"
+keywords = ["http", "server", "static"]
+categories = ["web-programming::http-server"]
+version = "0.1.2"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 axum = "0.6.20"
