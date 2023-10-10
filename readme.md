@@ -10,8 +10,16 @@ cargo install --git https://github.com/Lurk/serve serve
 
 ## Usage
 
+To serve files from current folder:
+
 ```shell
-serve --path=./static
+serve
+```
+
+To serve files from specific folder
+
+```shell
+serve /path/to/specific/folder
 ```
 
 ## Minimum supported Rust version
