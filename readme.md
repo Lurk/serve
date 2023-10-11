@@ -22,6 +22,12 @@ To serve files from specific folder
 serve /path/to/specific/folder
 ```
 
+## Options:
+
+- p, --port <PORT>  port to listen on. Defaults to 3000
+- h, --help         Print help
+- V, --version      Print version
+
 ## Minimum supported Rust version
 
 serve MSRV is 1.70
