@@ -21,19 +21,15 @@ enum LogLevel {
 struct Args {
     /// path to the directory to serve. Defaults to the current directory.
     path: Option<PathBuf>,
-    /// port to listen on. Defaults to 3000.
-    #[clap(short, long)]
-    port: Option<u16>,
+    /// port to listen on.
+    #[clap(short, long, default_value_t = 3000)]
+    port: u16,
     /// log level.
     #[clap(value_enum, default_value_t = LogLevel::Error, long, short)]
     log_level: LogLevel,
 }
 
 impl Args {
-    pub fn get_port(&self) -> u16 {
-        self.port.unwrap_or(3000)
-    }
-
     pub fn get_path(&self) -> PathBuf {
         self.path.clone().unwrap_or(".".into())
     }
@@ -66,7 +62,7 @@ async fn main() {
             .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
     );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.get_port()));
+    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     tracing::info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
