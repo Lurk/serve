@@ -24,10 +24,12 @@ serve /path/to/specific/folder
 
 ## Options:
 
-- -p, --port <PORT>            port to listen on. Defaults to 3000
-- -l, --log-level <LOG_LEVEL>  log level [default: error] [possible values: error, warn, info, debug, trace]
-- -h, --help                   Print help
-- -V, --version                Print version
+```
+  -p, --port <PORT>            port to listen on. Defaults to 3000
+  -l, --log-level <LOG_LEVEL>  log level [default: error] [possible values: error, warn, info, debug, trace]
+  -h, --help                   Print help
+  -V, --version                Print version
+```
 
 ## Minimum supported Rust version
 
