@@ -26,6 +26,7 @@ serve /path/to/specific/folder
 
 ```
   -p, --port <PORT>            port to listen on [default: 3000]
+  -a, --addr <ADDR>            address to listen on [default: 127.0.0.1]
   -l, --log-level <LOG_LEVEL>  log level [default: error] [possible values: error, warn, info, debug, trace]
   -h, --help                   Print help
   -V, --version                Print version
