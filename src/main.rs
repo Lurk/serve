@@ -1,6 +1,9 @@
 use axum::Router;
 use clap::{Parser, ValueEnum};
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 use tower_http::{
     services::ServeDir,
     trace::{self, TraceLayer},
@@ -24,6 +27,9 @@ struct Args {
     /// port to listen on.
     #[clap(short, long, default_value_t = 3000)]
     port: u16,
+    /// address to listen on.
+    #[clap(short, long, default_value = "127.0.0.1")]
+    addr: Ipv4Addr,
     /// log level.
     #[clap(value_enum, default_value_t = LogLevel::Error, long, short)]
     log_level: LogLevel,
@@ -62,7 +68,7 @@ async fn main() {
             .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
     );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let addr = SocketAddr::from((args.addr, args.port));
     tracing::info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
