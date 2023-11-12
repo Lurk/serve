@@ -1,5 +1,6 @@
 use axum::Router;
-use clap::{Parser, ValueEnum};
+use axum_server::tls_rustls::RustlsConfig;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -10,7 +11,7 @@ use tower_http::{
 };
 use tracing::Level;
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum LogLevel {
     Error,
     Warn,
@@ -19,9 +20,27 @@ enum LogLevel {
     Trace,
 }
 
-#[derive(Parser)]
+#[derive(Args, Debug)]
+struct Tls {
+    /// path to the certificate file.
+    #[clap(short, long)]
+    cert: PathBuf,
+    /// path to the private key file.
+    #[clap(short, long)]
+    key: PathBuf,
+}
+
+#[derive(Subcommand, Debug)]
+enum Subcommands {
+    /// Adds TLS support
+    Tls(Tls),
+}
+
+#[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+struct ServeArgs {
+    #[clap(subcommand)]
+    subcommand: Option<Subcommands>,
     /// path to the directory to serve. Defaults to the current directory.
     path: Option<PathBuf>,
     /// port to listen on.
@@ -35,7 +54,7 @@ struct Args {
     log_level: LogLevel,
 }
 
-impl Args {
+impl ServeArgs {
     pub fn get_path(&self) -> PathBuf {
         self.path.clone().unwrap_or(".".into())
     }
@@ -55,12 +74,12 @@ impl From<LogLevel> for Level {
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let args = ServeArgs::parse();
+    println!("{:?}", args);
     tracing_subscriber::fmt()
         .with_max_level(<LogLevel as Into<Level>>::into(args.log_level))
         .compact()
         .init();
-
     let service = ServeDir::new(args.get_path());
     let app = Router::new().nest_service("/", service).layer(
         TraceLayer::new_for_http()
@@ -70,8 +89,22 @@ async fn main() {
 
     let addr = SocketAddr::from((args.addr, args.port));
     tracing::info!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    match args.subcommand {
+        Some(Subcommands::Tls(tls)) => {
+            let config = match RustlsConfig::from_pem_file(tls.cert, tls.key).await {
+                Ok(config) => config,
+                Err(err) => panic!("Error loading TLS config: {}", err),
+            };
+            axum_server::bind_rustls(addr, config)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        }
+        None => {
+            axum_server::bind(addr)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        }
+    }
 }
