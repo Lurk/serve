@@ -10,27 +10,50 @@ cargo install --git https://github.com/Lurk/serve serve
 
 ## Usage
 
-To serve files from current folder:
-
-```shell
-serve
 ```
-
-To serve files from specific folder
-
-```shell
-serve /path/to/specific/folder
+serve [OPTIONS] [PATH] [COMMAND]
 ```
 
 ## Options:
 
 ```
+
+
+Options:
   -p, --port <PORT>            port to listen on [default: 3000]
   -a, --addr <ADDR>            address to listen on [default: 127.0.0.1]
   -l, --log-level <LOG_LEVEL>  log level [default: error] [possible values: error, warn, info, debug, trace]
   -h, --help                   Print help
   -V, --version                Print version
 ```
+
+## Arguments
+
+```
+  [PATH]  path to the directory to serve. Defaults to the current directory
+```
+
+## Commands
+
+```
+  tls   Adds support for `serve tls --cert <cert> --key <key>`
+  help  Print this message or the help of the given subcommand(s)
+```
+
+### tls
+
+Adds TLS support
+
+```
+Usage: serve tls --cert <CERT> --key <KEY>
+
+Options:
+  -c, --cert <CERT>  path to the certificate file
+  -k, --key <KEY>    path to the private key file
+  -h, --help         Print help
+
+```
+
 
 ## Minimum supported Rust version
 
