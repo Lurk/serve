@@ -75,7 +75,6 @@ impl From<LogLevel> for Level {
 #[tokio::main]
 async fn main() {
     let args = ServeArgs::parse();
-    println!("{:?}", args);
     tracing_subscriber::fmt()
         .with_max_level(<LogLevel as Into<Level>>::into(args.log_level))
         .compact()
