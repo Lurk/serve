@@ -36,7 +36,7 @@ Options:
 ## Commands
 
 ```
-  tls   Adds support for `serve tls --cert <cert> --key <key>`
+  tls   Adds TLS support
   help  Print this message or the help of the given subcommand(s)
 ```
 
@@ -54,6 +54,13 @@ Options:
 
 ```
 
+#### Generate self signed certificate for localhost
+
+```shell
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
+  -nodes -keyout localhost.key -out localhost.crt -subj "/CN=localhost" \
+  -addext "subjectAltName=IP:127.0.0.1"
+```
 
 ## Minimum supported Rust version
 
