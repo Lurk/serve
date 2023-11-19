@@ -53,6 +53,9 @@ struct ServeArgs {
     /// log level.
     #[clap(value_enum, default_value_t = LogLevel::Error, long, short)]
     log_level: LogLevel,
+    /// disable compression.
+    #[clap(long, short)]
+    disable_compression: bool,
 }
 
 impl ServeArgs {
@@ -76,34 +79,46 @@ impl From<LogLevel> for Level {
 #[tokio::main]
 async fn main() {
     let args = ServeArgs::parse();
+
     tracing_subscriber::fmt()
         .with_max_level(<LogLevel as Into<Level>>::into(args.log_level))
         .compact()
         .init();
+
     let service = ServeDir::new(args.get_path());
-    let app = Router::new()
-        .nest_service("/", service)
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        )
-        .layer(CompressionLayer::new());
+
+    let app = Router::new().nest_service("/", service).layer(
+        TraceLayer::new_for_http()
+            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+    );
+
+    let app = if args.disable_compression {
+        app
+    } else {
+        tracing::info!("compression enabled");
+        app.layer(CompressionLayer::new())
+    };
 
     let addr = SocketAddr::from((args.addr, args.port));
-    tracing::info!("listening on {}", addr);
+
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
             let config = match RustlsConfig::from_pem_file(tls.cert, tls.key).await {
                 Ok(config) => config,
                 Err(err) => panic!("Error loading TLS config: {}", err),
             };
+
+            tracing::info!("listening on {} with TLS", addr);
+
             axum_server::bind_rustls(addr, config)
                 .serve(app.into_make_service())
                 .await
                 .unwrap();
         }
         None => {
+            tracing::info!("listening on {}", addr);
+
             axum_server::bind(addr)
                 .serve(app.into_make_service())
                 .await
