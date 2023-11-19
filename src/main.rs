@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 use tower_http::{
+    compression::CompressionLayer,
     services::ServeDir,
     trace::{self, TraceLayer},
 };
@@ -80,11 +81,14 @@ async fn main() {
         .compact()
         .init();
     let service = ServeDir::new(args.get_path());
-    let app = Router::new().nest_service("/", service).layer(
-        TraceLayer::new_for_http()
-            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-    );
+    let app = Router::new()
+        .nest_service("/", service)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
+        .layer(CompressionLayer::new());
 
     let addr = SocketAddr::from((args.addr, args.port));
     tracing::info!("listening on {}", addr);
