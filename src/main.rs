@@ -1,13 +1,15 @@
-use axum::Router;
+use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{
+    io::Error,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 use tower_http::{
     compression::CompressionLayer,
-    services::ServeDir,
+    services::{ServeDir, ServeFile},
+    set_status::SetStatus,
     trace::{self, TraceLayer},
 };
 use tracing::Level;
@@ -19,6 +21,18 @@ enum LogLevel {
     Info,
     Debug,
     Trace,
+}
+
+impl From<LogLevel> for Level {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Error => Level::ERROR,
+            LogLevel::Warn => Level::WARN,
+            LogLevel::Info => Level::INFO,
+            LogLevel::Debug => Level::DEBUG,
+            LogLevel::Trace => Level::TRACE,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -53,9 +67,15 @@ struct ServeArgs {
     /// log level.
     #[clap(value_enum, default_value_t = LogLevel::Error, long, short)]
     log_level: LogLevel,
-    /// disable compression.
-    #[clap(long, short)]
+    /// compression layer is enabled by default.
+    #[clap(long)]
     disable_compression: bool,
+    /// path to 404 page. By default, 404 is empty.
+    #[clap(long)]
+    not_found: Option<PathBuf>,
+    /// override with 200 OK. Useful for SPA. Requires --not-found.
+    #[clap(long, requires = "not_found")]
+    ok: bool,
 }
 
 impl ServeArgs {
@@ -64,34 +84,32 @@ impl ServeArgs {
     }
 }
 
-impl From<LogLevel> for Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Error => Level::ERROR,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Trace => Level::TRACE,
-        }
-    }
-}
-
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Error> {
     let args = ServeArgs::parse();
+    let addr = SocketAddr::from((args.addr, args.port));
 
     tracing_subscriber::fmt()
         .with_max_level(<LogLevel as Into<Level>>::into(args.log_level))
         .compact()
         .init();
 
-    let service = ServeDir::new(args.get_path());
+    let serve_dir = ServeDir::new(args.get_path());
 
-    let app = Router::new().nest_service("/", service).layer(
-        TraceLayer::new_for_http()
-            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-    );
+    let app = Router::new();
+
+    let app = if let Some(path) = args.not_found.as_ref() {
+        tracing::info!("cutom 404 page");
+        let serve_dir = if args.ok {
+            tracing::info!("overriding 404 with 200 OK");
+            serve_dir.fallback(SetStatus::new(ServeFile::new(path), StatusCode::OK))
+        } else {
+            serve_dir.not_found_service(ServeFile::new(path))
+        };
+        app.nest_service("/", serve_dir)
+    } else {
+        app.nest_service("/", serve_dir)
+    };
 
     let app = if args.disable_compression {
         app
@@ -100,29 +118,26 @@ async fn main() {
         app.layer(CompressionLayer::new())
     };
 
-    let addr = SocketAddr::from((args.addr, args.port));
+    let service = app
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
+        .into_make_service();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
-            let config = match RustlsConfig::from_pem_file(tls.cert, tls.key).await {
-                Ok(config) => config,
-                Err(err) => panic!("Error loading TLS config: {}", err),
-            };
-
+            let config = RustlsConfig::from_pem_file(tls.cert, tls.key).await?;
             tracing::info!("listening on {} with TLS", addr);
-
             axum_server::bind_rustls(addr, config)
-                .serve(app.into_make_service())
-                .await
-                .unwrap();
+                .serve(service)
+                .await?;
         }
         None => {
             tracing::info!("listening on {}", addr);
-
-            axum_server::bind(addr)
-                .serve(app.into_make_service())
-                .await
-                .unwrap();
+            axum_server::bind(addr).serve(service).await?;
         }
-    }
+    };
+    Ok(())
 }
