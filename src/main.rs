@@ -1,11 +1,17 @@
 use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use futures::{
+    channel::mpsc::{channel, Receiver},
+    SinkExt, StreamExt,
+};
+use notify_debouncer_mini::{new_debouncer, notify::*, Debouncer};
 use std::{
-    io::Error,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
+use tokio::join;
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -85,7 +91,7 @@ impl ServeArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<()> {
     let args = ServeArgs::parse();
     let addr = SocketAddr::from((args.addr, args.port));
 
@@ -128,11 +134,15 @@ async fn main() -> Result<(), Error> {
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
-            let config = RustlsConfig::from_pem_file(tls.cert, tls.key).await?;
+            let config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
             tracing::info!("listening on {} with TLS", addr);
-            axum_server::bind_rustls(addr, config)
-                .serve(service)
-                .await?;
+
+            let (server, tls_watcher) = join!(
+                axum_server::bind_rustls(addr, config.clone()).serve(service),
+                reload(config, &tls)
+            );
+            server?;
+            tls_watcher?;
         }
         None => {
             tracing::info!("listening on {}", addr);
@@ -140,4 +150,40 @@ async fn main() -> Result<(), Error> {
         }
     };
     Ok(())
+}
+
+async fn reload(tls_config: RustlsConfig, serve_config: &Tls) -> notify::Result<()> {
+    let (mut watcher, mut rx) = async_watcher()?;
+
+    let _ = watcher
+        .watcher()
+        .watch(&serve_config.cert, RecursiveMode::NonRecursive);
+
+    let _ = watcher
+        .watcher()
+        .watch(&serve_config.key, RecursiveMode::NonRecursive);
+
+    while rx.next().await.is_some() {
+        tracing::info!("reloading rustls configuration");
+        tls_config
+            .reload_from_pem_file(serve_config.cert.clone(), serve_config.key.clone())
+            .await
+            .unwrap();
+        tracing::info!("rustls configuration reloaded");
+    }
+
+    Ok(())
+}
+
+fn async_watcher() -> notify::Result<(Debouncer<RecommendedWatcher>, Receiver<()>)> {
+    let (mut tx, rx) = channel(1);
+
+    let watcher = new_debouncer(Duration::from_secs(1), move |_| {
+        futures::executor::block_on(async {
+            tx.send(()).await.unwrap();
+        })
+    })
+    .expect("debouncer to be created");
+
+    Ok((watcher, rx))
 }
