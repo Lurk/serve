@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
     let app = Router::new();
 
     let app = if let Some(path) = args.not_found.as_ref() {
-        tracing::info!("cutom 404 page");
+        tracing::info!("custom 404 page");
         let serve_dir = if args.ok {
             tracing::info!("overriding 404 with 200 OK");
             serve_dir.fallback(SetStatus::new(ServeFile::new(path), StatusCode::OK))
