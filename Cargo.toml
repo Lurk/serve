@@ -7,7 +7,7 @@ repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls"]
 categories = ["web-programming::http-server"]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 
 
