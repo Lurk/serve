@@ -1,17 +1,19 @@
 use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use futures::{
-    channel::mpsc::{channel, Receiver},
-    SinkExt, StreamExt,
-};
-use notify_debouncer_mini::{new_debouncer, notify::*, Debouncer};
+use event::{DataChange, ModifyKind};
+use notify::*;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     time::Duration,
 };
-use tokio::join;
+use tokio::{
+    join,
+    runtime::Handle,
+    sync::mpsc::{Receiver, Sender},
+    time::sleep,
+};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -153,37 +155,52 @@ async fn main() -> Result<()> {
 }
 
 async fn reload(tls_config: RustlsConfig, serve_config: &Tls) -> notify::Result<()> {
-    let (mut watcher, mut rx) = async_watcher()?;
+    let (mut watcher, mut rx, tx) = async_watcher()?;
+    let mut delay: u64 = 1;
+    watcher.watch(&serve_config.cert, RecursiveMode::NonRecursive)?;
+    watcher.watch(&serve_config.key, RecursiveMode::NonRecursive)?;
 
-    let _ = watcher
-        .watcher()
-        .watch(&serve_config.cert, RecursiveMode::NonRecursive);
-
-    let _ = watcher
-        .watcher()
-        .watch(&serve_config.key, RecursiveMode::NonRecursive);
-
-    while rx.next().await.is_some() {
+    while rx.recv().await.is_some() {
         tracing::info!("reloading rustls configuration");
-        tls_config
+        match tls_config
             .reload_from_pem_file(serve_config.cert.clone(), serve_config.key.clone())
             .await
-            .unwrap();
-        tracing::info!("rustls configuration reloaded");
+        {
+            Ok(_) => {
+                tracing::info!("rustls configuration reload successiful");
+                delay = 1;
+            }
+            Err(e) => {
+                delay *= 2;
+                tracing::error!("tls reload error: {}", e);
+                tracing::info!("sleep {} milliseconds before retry", delay);
+                sleep(Duration::from_millis(delay)).await;
+                tx.send(()).await.expect("to be able to send message");
+            }
+        };
     }
 
     Ok(())
 }
 
-fn async_watcher() -> notify::Result<(Debouncer<RecommendedWatcher>, Receiver<()>)> {
-    let (mut tx, rx) = channel(1);
+fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<()>, Sender<()>)> {
+    let (tx, rx) = tokio::sync::mpsc::channel(20);
+    let rt = Handle::current();
 
-    let watcher = new_debouncer(Duration::from_secs(1), move |_| {
-        futures::executor::block_on(async {
-            tx.send(()).await.unwrap();
-        })
-    })
-    .expect("debouncer to be created");
+    let txc = tx.clone();
+    let watcher = RecommendedWatcher::new(
+        move |res: Result<Event>| {
+            if let Ok(res) = res {
+                if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
+                    let f = txc.clone();
+                    rt.spawn(async move {
+                        f.send(()).await.unwrap();
+                    });
+                }
+            }
+        },
+        Config::default(),
+    )?;
 
-    Ok((watcher, rx))
+    Ok((watcher, rx, tx))
 }
