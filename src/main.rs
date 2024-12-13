@@ -8,12 +8,7 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use tokio::{
-    join,
-    runtime::Handle,
-    sync::mpsc::{Receiver, Sender},
-    time::sleep,
-};
+use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -104,7 +99,11 @@ async fn main() -> Result<()> {
 
     let serve_dir = ServeDir::new(args.get_path());
 
-    let app = Router::new();
+    let app = Router::new().layer(
+        TraceLayer::new_for_http()
+            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+    );
 
     let app = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
@@ -126,13 +125,7 @@ async fn main() -> Result<()> {
         app.layer(CompressionLayer::new())
     };
 
-    let service = app
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        )
-        .into_make_service();
+    let service = app.into_make_service();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
@@ -141,7 +134,7 @@ async fn main() -> Result<()> {
 
             let (server, tls_watcher) = join!(
                 axum_server::bind_rustls(addr, config.clone()).serve(service),
-                reload(config, &tls)
+                init_certificate_watch(config, &tls)
             );
             server?;
             tls_watcher?;
@@ -154,9 +147,30 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn reload(tls_config: RustlsConfig, serve_config: &Tls) -> notify::Result<()> {
-    let (mut watcher, mut rx, tx) = async_watcher()?;
+async fn init_certificate_watch(
+    tls_config: RustlsConfig,
+    serve_config: &Tls,
+) -> notify::Result<()> {
     let mut delay: u64 = 1;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let rt = Handle::current();
+    let retry_tx = tx.clone();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<Event>| match res {
+            Ok(res) => {
+                if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
+                    let tx = tx.clone();
+                    rt.spawn(async move {
+                        tx.send(()).await.expect("to be able to send message");
+                    });
+                }
+            }
+            Err(e) => tracing::error!("watcher error: {}", e),
+        },
+        Config::default(),
+    )?;
+
     watcher.watch(&serve_config.cert, RecursiveMode::NonRecursive)?;
     watcher.watch(&serve_config.key, RecursiveMode::NonRecursive)?;
 
@@ -172,35 +186,16 @@ async fn reload(tls_config: RustlsConfig, serve_config: &Tls) -> notify::Result<
             }
             Err(e) => {
                 delay *= 2;
-                tracing::error!("tls reload error: {}", e);
-                tracing::info!("sleep {} milliseconds before retry", delay);
-                sleep(Duration::from_millis(delay)).await;
-                tx.send(()).await.expect("to be able to send message");
+                tracing::error!("rustls reload error: {}", e);
+                tracing::info!("sleep {} nanoseconds before retry", delay);
+                sleep(Duration::from_nanos(delay)).await;
+                retry_tx
+                    .send(())
+                    .await
+                    .expect("to be able to send retry message");
             }
         };
     }
 
     Ok(())
-}
-
-fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<()>, Sender<()>)> {
-    let (tx, rx) = tokio::sync::mpsc::channel(20);
-    let rt = Handle::current();
-
-    let txc = tx.clone();
-    let watcher = RecommendedWatcher::new(
-        move |res: Result<Event>| {
-            if let Ok(res) = res {
-                if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
-                    let f = txc.clone();
-                    rt.spawn(async move {
-                        f.send(()).await.unwrap();
-                    });
-                }
-            }
-        },
-        Config::default(),
-    )?;
-
-    Ok((watcher, rx, tx))
 }
