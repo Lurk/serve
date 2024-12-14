@@ -1,17 +1,14 @@
 use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use futures::{
-    channel::mpsc::{channel, Receiver},
-    SinkExt, StreamExt,
-};
-use notify_debouncer_mini::{new_debouncer, notify::*, Debouncer};
+use event::{DataChange, ModifyKind};
+use notify::*;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     time::Duration,
 };
-use tokio::join;
+use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -102,7 +99,11 @@ async fn main() -> Result<()> {
 
     let serve_dir = ServeDir::new(args.get_path());
 
-    let app = Router::new();
+    let app = Router::new().layer(
+        TraceLayer::new_for_http()
+            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+    );
 
     let app = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
@@ -124,13 +125,7 @@ async fn main() -> Result<()> {
         app.layer(CompressionLayer::new())
     };
 
-    let service = app
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        )
-        .into_make_service();
+    let service = app.into_make_service();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
@@ -139,7 +134,7 @@ async fn main() -> Result<()> {
 
             let (server, tls_watcher) = join!(
                 axum_server::bind_rustls(addr, config.clone()).serve(service),
-                reload(config, &tls)
+                init_certificate_watch(config, &tls)
             );
             server?;
             tls_watcher?;
@@ -152,38 +147,55 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn reload(tls_config: RustlsConfig, serve_config: &Tls) -> notify::Result<()> {
-    let (mut watcher, mut rx) = async_watcher()?;
+async fn init_certificate_watch(
+    tls_config: RustlsConfig,
+    serve_config: &Tls,
+) -> notify::Result<()> {
+    let mut delay: u64 = 1;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let rt = Handle::current();
+    let retry_tx = tx.clone();
 
-    let _ = watcher
-        .watcher()
-        .watch(&serve_config.cert, RecursiveMode::NonRecursive);
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<Event>| match res {
+            Ok(res) => {
+                if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
+                    let tx = tx.clone();
+                    rt.spawn(async move {
+                        tx.send(()).await.expect("to be able to send message");
+                    });
+                }
+            }
+            Err(e) => tracing::error!("watcher error: {}", e),
+        },
+        Config::default(),
+    )?;
 
-    let _ = watcher
-        .watcher()
-        .watch(&serve_config.key, RecursiveMode::NonRecursive);
+    watcher.watch(&serve_config.cert, RecursiveMode::NonRecursive)?;
+    watcher.watch(&serve_config.key, RecursiveMode::NonRecursive)?;
 
-    while rx.next().await.is_some() {
+    while rx.recv().await.is_some() {
         tracing::info!("reloading rustls configuration");
-        tls_config
+        match tls_config
             .reload_from_pem_file(serve_config.cert.clone(), serve_config.key.clone())
             .await
-            .unwrap();
-        tracing::info!("rustls configuration reloaded");
+        {
+            Ok(_) => {
+                tracing::info!("rustls configuration reload successiful");
+                delay = 1;
+            }
+            Err(e) => {
+                delay *= 2;
+                tracing::error!("rustls reload error: {}", e);
+                tracing::info!("sleep {} nanoseconds before retry", delay);
+                sleep(Duration::from_nanos(delay)).await;
+                retry_tx
+                    .send(())
+                    .await
+                    .expect("to be able to send retry message");
+            }
+        };
     }
 
     Ok(())
-}
-
-fn async_watcher() -> notify::Result<(Debouncer<RecommendedWatcher>, Receiver<()>)> {
-    let (mut tx, rx) = channel(1);
-
-    let watcher = new_debouncer(Duration::from_secs(1), move |_| {
-        futures::executor::block_on(async {
-            tx.send(()).await.unwrap();
-        })
-    })
-    .expect("debouncer to be created");
-
-    Ok((watcher, rx))
 }
