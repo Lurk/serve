@@ -113,9 +113,9 @@ async fn main() -> Result<()> {
         } else {
             serve_dir.not_found_service(ServeFile::new(path))
         };
-        app.nest_service("/", serve_dir)
+        app.fallback_service(serve_dir)
     } else {
-        app.nest_service("/", serve_dir)
+        app.fallback_service(serve_dir)
     };
 
     let app = if args.disable_compression {
