@@ -2,7 +2,7 @@
 name = "serve"
 authors = ["Serhiy Barhamon"]
 description = "A simple tool to serve static files from a directory."
-rust-version = "1.74.0"
+rust-version = "1.77.0"
 repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls"]
@@ -24,4 +24,4 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5.23", features = ["derive"] }
-notify = "7.0.0"
+notify = "8.0.0"
