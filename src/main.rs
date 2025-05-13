@@ -1,6 +1,7 @@
 use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
+use clap_verbosity_flag::Verbosity;
 use event::{DataChange, ModifyKind};
 use notify::*;
 use std::{
@@ -16,27 +17,7 @@ use tower_http::{
     trace::{self, TraceLayer},
 };
 use tracing::Level;
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Error => Level::ERROR,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Trace => Level::TRACE,
-        }
-    }
-}
+use tracing_log::AsTrace;
 
 #[derive(Args, Debug)]
 struct Tls {
@@ -68,8 +49,8 @@ struct ServeArgs {
     #[clap(short, long, default_value = "127.0.0.1")]
     addr: Ipv4Addr,
     /// log level.
-    #[clap(value_enum, default_value_t = LogLevel::Error, long, short)]
-    log_level: LogLevel,
+    #[command(flatten)]
+    log_level: Verbosity,
     /// compression layer is enabled by default.
     #[clap(long)]
     disable_compression: bool,
@@ -93,7 +74,7 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from((args.addr, args.port));
 
     tracing_subscriber::fmt()
-        .with_max_level(<LogLevel as Into<Level>>::into(args.log_level))
+        .with_max_level(args.log_level.log_level_filter().as_trace())
         .compact()
         .init();
 
