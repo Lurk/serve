@@ -20,7 +20,8 @@ serve [OPTIONS] [PATH] [COMMAND]
 Options:
   -p, --port <PORT>            port to listen on [default: 3000]
   -a, --addr <ADDR>            address to listen on [default: 127.0.0.1]
-  -l, --log-level <LOG_LEVEL>  log level [default: error] [possible values: error, warn, info, debug, trace]
+  -v, --verbose...             Increase logging verbosity
+  -q, --quiet...               Decrease logging verbosity
       --disable-compression    compression layer is enabled by default
       --not-found <NOT_FOUND>  path to 404 page. By default, 404 is empty
       --ok                     override with 200 OK. Useful for SPA. Requires --not-found
