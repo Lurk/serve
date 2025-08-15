@@ -1,6 +1,11 @@
 mod errors;
 
-use axum::{http::StatusCode, Router};
+use axum::{
+    extract::Request,
+    http::{header::HOST, StatusCode, Uri},
+    response::Redirect,
+    Router,
+};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -18,8 +23,9 @@ use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
     set_status::SetStatus,
-    trace::TraceLayer,
+    trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
+use tracing::Level;
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -33,6 +39,9 @@ struct Tls {
     /// path to the private key file.
     #[clap(short, long)]
     key: PathBuf,
+    /// Redirect HTTP to HTTPS. Works only if 443 port is used.
+    #[clap(long)]
+    redirect_http: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,18 +125,26 @@ async fn main() -> Result<(), errors::ServeError> {
         app.layer(CompressionLayer::new())
     };
 
-    let service = app.layer(TraceLayer::new_for_http()).into_make_service();
+    let service = app
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
+        .into_make_service();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
             let config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
             tracing::info!("listening on {} with TLS", addr);
 
-            let (server, tls_watcher) = join!(
+            let (server, http_to_https_redirect, tls_watcher) = join!(
                 axum_server::bind_rustls(addr, config.clone()).serve(service),
+                init_http_to_https_redirect(tls.redirect_http, args.port, args.addr),
                 init_certificate_watch(config, &tls)
             );
             server?;
+            http_to_https_redirect?;
             tls_watcher?;
         }
         None => {
@@ -136,6 +153,56 @@ async fn main() -> Result<(), errors::ServeError> {
         }
     };
     Ok(())
+}
+
+async fn init_http_to_https_redirect(
+    should_redirect: bool,
+    port: u16,
+    addr: Ipv4Addr,
+) -> Result<(), errors::ServeError> {
+    if should_redirect && port == 443 {
+        tracing::info!("initializing redirect from HTTP to HTTPS");
+        let http_addr = SocketAddr::from((addr, 80));
+        let service = Router::new()
+            .fallback(redirect)
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            )
+            .into_make_service();
+        axum_server::bind(http_addr).serve(service).await?;
+    }
+
+    if should_redirect && port != 443 {
+        tracing::error!("HTTP to HTTPS redirect is enabled but HTTPS port is not 443");
+    }
+
+    Ok(())
+}
+
+async fn redirect(req: Request) -> Redirect {
+    let mut parts = req.uri().clone().into_parts();
+    parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
+
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some("/".parse().unwrap());
+    }
+
+    let host = req
+        .headers()
+        .get(HOST)
+        .expect("HOST to be present in request");
+
+    let https_host = host
+        .to_str()
+        .expect("HOST to be a valid str")
+        .replace("80", "443");
+
+    parts.authority = Some(https_host.parse().expect("host to be valid"));
+
+    let destination = Uri::from_parts(parts).expect("Uri can be recustructed with HTTPS schema");
+    Redirect::permanent(destination.to_string().as_str())
 }
 
 fn init_logging(

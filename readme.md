@@ -17,22 +17,51 @@ serve [OPTIONS] [PATH] [COMMAND]
 ## Options:
 
 ```
-Options:
-  -p, --port <PORT>            port to listen on [default: 3000]
-  -a, --addr <ADDR>            address to listen on [default: 127.0.0.1]
-  -v, --verbose...             Increase logging verbosity
-  -q, --quiet...               Decrease logging verbosity
-      --disable-compression    compression layer is enabled by default
-      --not-found <NOT_FOUND>  path to 404 page. By default, 404 is empty
-      --ok                     override with 200 OK. Useful for SPA. Requires --not-found
-  -h, --help                   Print help
-  -V, --version                Print version
+  -p, --port <PORT>
+          Port to listen on
+
+          [default: 3000]
+
+  -a, --addr <ADDR>
+          Address to listen on
+
+          [default: 127.0.0.1]
+
+      --disable-compression
+          Compression layer is enabled by default
+
+      --not-found <NOT_FOUND>
+          Path to 404 page. By default, 404 is empty
+
+      --ok
+          Override with 200 OK. Useful for SPA. Requires --not-found
+
+  -v, --verbose...
+          Increase logging verbosity
+
+  -q, --quiet...
+          Decrease logging verbosity
+
+      --log-path <LOG_PATH>
+          Path to the directory where logs will be stored. If not specified, logs will be printed to stdout.
+          If specified, logs will be written to the file (log_path/serve.YYYY-MM-DD.log) and rotated daily.
+          If the directory does not exist, it will be created.
+
+      --log-max-files <LOG_MAX_FILES>
+          Maximum number of log files to keep. Defaults to 7
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
 ```
 
 ## Arguments
 
 ```
-  [PATH]  path to the directory to serve. Defaults to the current directory
+  [PATH] Path to the directory to serve. Defaults to the current directory
 ```
 
 ## Commands
@@ -47,16 +76,15 @@ Options:
 Adds TLS support
 
 ```
-Usage: serve tls --cert <CERT> --key <KEY>
+Usage: serve [OPTIONS] [PATH] tls --cert <CERT> --key <KEY> --redirect-http
 
 Options:
-  -c, --cert <CERT>  path to the certificate file
-  -k, --key <KEY>    path to the private key file
-  -h, --help         Print help
-
+  -c, --cert <CERT>    path to the certificate file
+  -k, --key <KEY>      path to the private key file
+      --redirect-http  Redirect HTTP to HTTPS. Works only if 443 port is used
 ```
 
-#### Generate self signed certificate for localhost
+## Generate self signed certificate for localhost
 
 ```shell
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
