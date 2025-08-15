@@ -20,7 +20,6 @@ use tower_http::{
     set_status::SetStatus,
     trace::TraceLayer,
 };
-use tracing::Level;
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -75,7 +74,7 @@ struct ServeArgs {
     #[clap(long)]
     log_path: Option<PathBuf>,
     /// Maximum number of log files to keep. Defaults to 7.
-    #[clap(long)]
+    #[clap(long, requires = "log_path")]
     log_max_files: Option<usize>,
 }
 
@@ -146,7 +145,7 @@ fn init_logging(
 ) -> Result<Option<WorkerGuard>, errors::ServeError> {
     if let Some(log_path) = log_path.as_ref() {
         if !log_path.exists() {
-            std::fs::create_dir_all(&log_path)?;
+            std::fs::create_dir_all(log_path)?;
         } else if !log_path.is_dir() {
             return Err(errors::ServeError::NotADirectory(
                 log_path.to_string_lossy().to_string(),
