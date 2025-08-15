@@ -1,9 +1,13 @@
+mod errors;
+
 use axum::{http::StatusCode, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-use event::{DataChange, ModifyKind};
-use notify::*;
+use notify::{
+    event::{DataChange, ModifyKind},
+    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
+};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -14,10 +18,12 @@ use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
     set_status::SetStatus,
-    trace::{self, TraceLayer},
+    trace::TraceLayer,
 };
-use tracing::Level;
-use tracing_log::AsTrace;
+use tracing_appender::{
+    non_blocking::WorkerGuard,
+    rolling::{RollingFileAppender, Rotation},
+};
 
 #[derive(Args, Debug)]
 struct Tls {
@@ -40,26 +46,36 @@ enum Subcommands {
 struct ServeArgs {
     #[clap(subcommand)]
     subcommand: Option<Subcommands>,
-    /// path to the directory to serve. Defaults to the current directory.
+    /// Path to the directory to serve. Defaults to the current directory.
     path: Option<PathBuf>,
-    /// port to listen on.
+    /// Port to listen on.
     #[clap(short, long, default_value_t = 3000)]
     port: u16,
-    /// address to listen on.
+    /// Address to listen on.
     #[clap(short, long, default_value = "127.0.0.1")]
     addr: Ipv4Addr,
-    /// log level.
-    #[command(flatten)]
-    log_level: Verbosity,
-    /// compression layer is enabled by default.
+    /// Compression layer is enabled by default.
     #[clap(long)]
     disable_compression: bool,
-    /// path to 404 page. By default, 404 is empty.
+    /// Path to 404 page. By default, 404 is empty.
     #[clap(long)]
     not_found: Option<PathBuf>,
-    /// override with 200 OK. Useful for SPA. Requires --not-found.
+    /// Override with 200 OK. Useful for SPA. Requires --not-found.
     #[clap(long, requires = "not_found")]
     ok: bool,
+    /// Log level.
+    #[command(flatten)]
+    log_level: Verbosity,
+    /// Path to the directory where logs will be stored. If not specified, logs will be printed to stdout.
+    ///
+    /// If specified, logs will be written to the file (log_path/serve.YYYY-MM-DD.log) and rotated daily.
+    ///
+    /// If the directory does not exist, it will be created.
+    #[clap(long)]
+    log_path: Option<PathBuf>,
+    /// Maximum number of log files to keep. Defaults to 7.
+    #[clap(long, requires = "log_path")]
+    log_max_files: Option<usize>,
 }
 
 impl ServeArgs {
@@ -69,22 +85,16 @@ impl ServeArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), errors::ServeError> {
     let args = ServeArgs::parse();
     let addr = SocketAddr::from((args.addr, args.port));
 
-    tracing_subscriber::fmt()
-        .with_max_level(args.log_level.log_level_filter().as_trace())
-        .compact()
-        .init();
+    let _guard: Option<WorkerGuard> =
+        init_logging(&args.log_path, &args.log_max_files, &args.log_level)?;
 
     let serve_dir = ServeDir::new(args.get_path());
 
-    let app = Router::new().layer(
-        TraceLayer::new_for_http()
-            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-    );
+    let app = Router::new();
 
     let app = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
@@ -106,7 +116,7 @@ async fn main() -> Result<()> {
         app.layer(CompressionLayer::new())
     };
 
-    let service = app.into_make_service();
+    let service = app.layer(TraceLayer::new_for_http()).into_make_service();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => {
@@ -128,17 +138,56 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn init_logging(
+    log_path: &Option<PathBuf>,
+    log_max_files: &Option<usize>,
+    log_level: &Verbosity,
+) -> Result<Option<WorkerGuard>, errors::ServeError> {
+    if let Some(log_path) = log_path.as_ref() {
+        if !log_path.exists() {
+            std::fs::create_dir_all(log_path)?;
+        } else if !log_path.is_dir() {
+            return Err(errors::ServeError::NotADirectory(
+                log_path.to_string_lossy().to_string(),
+            ));
+        }
+
+        let file_appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .max_log_files(log_max_files.unwrap_or(7))
+            .filename_prefix("serve")
+            .filename_suffix("log")
+            .build(log_path)?;
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        tracing_subscriber::fmt()
+            .with_max_level(*log_level)
+            .with_writer(non_blocking)
+            .compact()
+            .init();
+
+        return Ok(Some(_guard));
+    }
+
+    tracing_subscriber::fmt()
+        .with_max_level(*log_level)
+        .compact()
+        .init();
+
+    Ok(None)
+}
+
 async fn init_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
-) -> notify::Result<()> {
+) -> Result<(), errors::ServeError> {
     let mut delay: u64 = 1;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let rt = Handle::current();
     let retry_tx = tx.clone();
 
     let mut watcher = RecommendedWatcher::new(
-        move |res: Result<Event>| match res {
+        move |res: NotifyResult<Event>| match res {
             Ok(res) => {
                 if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
                     let tx = tx.clone();
@@ -169,7 +218,7 @@ async fn init_certificate_watch(
                 delay *= 2;
                 tracing::error!("rustls reload error: {}", e);
                 tracing::info!("sleep {} nanoseconds before retry", delay);
-                sleep(Duration::from_nanos(delay)).await;
+                sleep(Duration::from_millis(delay)).await;
                 retry_tx
                     .send(())
                     .await
