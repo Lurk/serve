@@ -30,4 +30,4 @@ tracing-log = "0.2.0"
 tracing-appender = "0.2.3"
 thiserror = "2.0.14"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
-notify = "8.1.0"
+notify = "8.2.0"
