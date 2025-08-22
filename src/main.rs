@@ -1,13 +1,11 @@
+mod config;
 mod errors;
 mod tls;
 
 use axum::{http::StatusCode, Router};
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use clap_verbosity_flag::Verbosity;
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-};
+use std::{net::SocketAddr, path::PathBuf};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -20,73 +18,21 @@ use tracing_appender::{
     rolling::{RollingFileAppender, Rotation},
 };
 
-use crate::tls::start_tls_server;
+use crate::{
+    config::{ServeArgs, Subcommands},
+    tls::start_tls_server,
+};
 
-#[derive(Args, Debug)]
-struct Tls {
-    /// path to the certificate file.
-    #[clap(short, long)]
-    cert: PathBuf,
-    /// path to the private key file.
-    #[clap(short, long)]
-    key: PathBuf,
-    /// Redirect HTTP to HTTPS. Works only if 443 port is used.
-    #[clap(long)]
-    redirect_http: bool,
-}
-
-#[derive(Subcommand, Debug)]
-enum Subcommands {
-    /// Adds TLS support
-    Tls(Tls),
-}
-
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct ServeArgs {
-    #[clap(subcommand)]
-    subcommand: Option<Subcommands>,
-    /// Path to the directory to serve. Defaults to the current directory.
-    path: Option<PathBuf>,
-    /// Port to listen on.
-    #[clap(short, long, default_value_t = 3000)]
-    port: u16,
-    /// Address to listen on.
-    #[clap(short, long, default_value = "127.0.0.1")]
-    addr: Ipv4Addr,
-    /// Compression layer is enabled by default.
-    #[clap(long)]
-    disable_compression: bool,
-    /// Path to 404 page. By default, 404 is empty.
-    #[clap(long)]
-    not_found: Option<PathBuf>,
-    /// Override with 200 OK. Useful for SPA. Requires --not-found.
-    #[clap(long, requires = "not_found")]
-    ok: bool,
-    /// Log level.
-    #[command(flatten)]
-    log_level: Verbosity,
-    /// Path to the directory where logs will be stored. If not specified, logs will be printed to stdout.
-    ///
-    /// If specified, logs will be written to the file (log_path/serve.YYYY-MM-DD.log) and rotated daily.
-    ///
-    /// If the directory does not exist, it will be created.
-    #[clap(long)]
-    log_path: Option<PathBuf>,
-    /// Maximum number of log files to keep. Defaults to 7.
-    #[clap(long, requires = "log_path")]
-    log_max_files: Option<usize>,
-}
-
-impl ServeArgs {
-    pub fn get_path(&self) -> PathBuf {
-        self.path.clone().unwrap_or(".".into())
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), errors::ServeError> {
-    let args = ServeArgs::parse();
+async fn run() -> Result<(), errors::ServeError> {
+    let args = ServeArgs::parse().resolve_config()?;
     let addr = SocketAddr::from((args.addr, args.port));
 
     let _guard: Option<WorkerGuard> =

@@ -1,5 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     time::Duration,
 };
 
@@ -12,15 +13,30 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use clap::Args;
 use notify::{
     event::{DataChange, ModifyKind},
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
 };
+use serde::{Deserialize, Serialize};
 use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
-use crate::{errors, Tls};
+use crate::errors;
+
+#[derive(Args, Debug, Serialize, Deserialize, Clone)]
+pub struct Tls {
+    /// path to the certificate file.
+    #[clap(short, long)]
+    pub cert: PathBuf,
+    /// path to the private key file.
+    #[clap(short, long)]
+    pub key: PathBuf,
+    /// Redirect HTTP to HTTPS. Works only if 443 port is used.
+    #[clap(long)]
+    pub redirect_http: bool,
+}
 
 pub async fn start_tls_server(
     service: IntoMakeService<Router>,
