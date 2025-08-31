@@ -7,7 +7,11 @@ use std::{
 use axum::{
     body::Body,
     extract::Request,
-    http::{header::HOST, Uri},
+    http::{
+        header::HOST,
+        uri::{Authority, InvalidUri},
+        Uri,
+    },
     response::{IntoResponse, Redirect, Response},
     routing::IntoMakeService,
     Router,
@@ -101,12 +105,14 @@ async fn redirect(req: Request) -> Response {
         return Response::builder().status(400).body(Body::empty()).unwrap();
     };
 
-    parts.authority = Some(
-        https_host
-            .replace("80", "443")
-            .parse()
-            .expect("host to be valid"),
-    );
+    let authority: Result<Authority, InvalidUri> = https_host.replace("80", "443").parse();
+
+    if authority.is_err() {
+        tracing::error!("HOST from headers is not valid authority: {https_host}");
+        return Response::builder().status(400).body(Body::empty()).unwrap();
+    }
+
+    parts.authority = Some(authority.expect("to be valid authority"));
 
     let Ok(destination) = Uri::from_parts(parts) else {
         tracing::error!("Url can not be reconstructed with HTTPS schema");
