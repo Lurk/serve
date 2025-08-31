@@ -11,7 +11,7 @@ cargo install --git https://github.com/Lurk/serve serve
 ## Usage
 
 ```
-serve [OPTIONS] [PATH] [COMMAND]
+serve [OPTIONS] [COMMAND]
 ```
 
 ## Options:
