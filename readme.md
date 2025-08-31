@@ -82,7 +82,7 @@ port = 3000
 addr = "127.0.0.1"
 disable_compression = false
 ok = false
-log_level = "trace"
+log_level = "trace" # off, error, warn, info, debug, trace
 log_path = "/var/log/serve"
 log_max_files = 7
 
