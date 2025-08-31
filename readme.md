@@ -17,45 +17,30 @@ serve [OPTIONS] [PATH] [COMMAND]
 ## Options:
 
 ```
-  -p, --port <PORT>
-          Port to listen on
+  -c, --config <CONFIG>                Path to the configuration file.
+                                       Command line arguments override the configuration file.
+                                       If configuration file does not exist, it will be created with the current
+                                       command line arguments.
 
-          [default: 3000]
+                                       Supported format is TOML.
 
-  -a, --addr <ADDR>
-          Address to listen on
+      --path <PATH>                    Path to the directory to serve. Defaults to the current directory
+  -p, --port <PORT>                    Port to listen on [default: 3000]
+  -a, --addr <ADDR>                    Address to listen on [default: 127.0.0.1]
+      --disable-compression            Compression layer is enabled by default
+      --not-found <NOT_FOUND>          Path to 404 page. By default, 404 is empty
+      --ok                             Override with 200 OK. Useful for SPA. Requires --not-found
+  -v, --verbose...                     Increase logging verbosity
+  -q, --quiet...                       Decrease logging verbosity
+      --log-path <LOG_PATH>            Path to the directory where logs will be stored.
+                                       If not specified, logs will be printed to stdout.
+                                       If specified, logs will be written to the file: log_path/serve.YYYY-MM-DD.log
+                                       and rotated daily.
+                                       If the directory does not exist, it will be created.
 
-          [default: 127.0.0.1]
-
-      --disable-compression
-          Compression layer is enabled by default
-
-      --not-found <NOT_FOUND>
-          Path to 404 page. By default, 404 is empty
-
-      --ok
-          Override with 200 OK. Useful for SPA. Requires --not-found
-
-  -v, --verbose...
-          Increase logging verbosity
-
-  -q, --quiet...
-          Decrease logging verbosity
-
-      --log-path <LOG_PATH>
-          Path to the directory where logs will be stored. If not specified, logs will be printed to stdout.
-          If specified, logs will be written to the file (log_path/serve.YYYY-MM-DD.log) and rotated daily.
-          If the directory does not exist, it will be created.
-
-      --log-max-files <LOG_MAX_FILES>
-          Maximum number of log files to keep. Defaults to 7
-
-  -h, --help
-          Print help (see a summary with '-h')
-
-  -V, --version
-          Print version
-
+      --log-max-files <LOG_MAX_FILES>  Maximum number of log files to keep [default: 7]
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## Arguments
@@ -83,6 +68,31 @@ Options:
   -k, --key <KEY>      path to the private key file
       --redirect-http  Redirect HTTP to HTTPS. Works only if 443 port is used
 ```
+
+## Config file:
+
+
+### Example config file:
+
+```toml
+# Configuration for Serve (https://github.com/Lurk/serve)
+
+path = "/var/www"
+port = 3000
+addr = "127.0.0.1"
+disable_compression = false
+ok = false
+log_level = "trace"
+log_path = "/var/log/serve"
+log_max_files = 7
+
+[subcommand.Tls]
+cert = "/var/certs/localhost.crt"
+key = "/var/certs/localhost.key"
+redirect_http = true
+```
+
+
 
 ## Generate self signed certificate for localhost
 
