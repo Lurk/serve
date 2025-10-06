@@ -99,7 +99,7 @@ jobs:
     # https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
     strategy:
       matrix:
-        msrv: ["1.77.0"] # notify v8.0.0 MSRV is 1.77
+        msrv: ["1.81.0"] # time-core v0.1.6
     name: ubuntu / ${{ matrix.msrv }}
     steps:
       - uses: actions/checkout@v4
