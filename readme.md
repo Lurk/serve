@@ -43,12 +43,6 @@ serve [OPTIONS] [COMMAND]
   -V, --version                        Print version
 ```
 
-## Arguments
-
-```
-  [PATH] Path to the directory to serve. Defaults to the current directory
-```
-
 ## Commands
 
 ```
