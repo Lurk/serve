@@ -3,9 +3,9 @@ use tracing_appender::rolling::InitError;
 
 #[derive(Error, Debug)]
 pub enum ServeError {
-    #[error("Notify errors")]
+    #[error("Notify errors {0}")]
     Notify(#[from] notify::Error),
-    #[error("IO errors")]
+    #[error("IO errors {0}")]
     Io(#[from] std::io::Error),
     #[error("Not a directory: {0}")]
     NotADirectory(String),
