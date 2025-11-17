@@ -14,7 +14,7 @@ edition = "2021"
 [dependencies]
 axum = "0.8.6"
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.52", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = [
   "tracing",
   "serde",
