@@ -2,7 +2,7 @@
 name = "serve"
 authors = ["Serhiy Barhamon"]
 description = "A simple tool to serve static files from a directory."
-rust-version = "1.77.0"
+rust-version = "1.82.0"
 repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls"]
@@ -13,7 +13,7 @@ edition = "2021"
 
 [dependencies]
 axum = "0.8.7"
-axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+axum-server = { version = "0.7.3", features = ["tls-rustls"] }
 clap = { version = "4.5.52", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = [
   "tracing",
