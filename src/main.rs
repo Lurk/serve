@@ -66,7 +66,12 @@ async fn run() -> Result<(), errors::ServeError> {
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                .on_response(
+                    DefaultOnResponse::new()
+                        .level(Level::INFO)
+                        .latency_unit(tower_http::LatencyUnit::Micros)
+                        .include_headers(true),
+                ),
         )
         .into_make_service();
 
