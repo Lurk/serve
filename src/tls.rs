@@ -18,10 +18,7 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Args;
-use notify::{
-    event::{DataChange, ModifyKind},
-    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
-};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
@@ -131,14 +128,29 @@ async fn init_certificate_watch(
     let rt = Handle::current();
     let retry_tx = tx.clone();
 
+    let cert_path = std::fs::canonicalize(&serve_config.cert)
+        .unwrap_or_else(|_| serve_config.cert.clone());
+    let key_path = std::fs::canonicalize(&serve_config.key)
+        .unwrap_or_else(|_| serve_config.key.clone());
+
+    let watched_cert = cert_path.clone();
+    let watched_key = key_path.clone();
+
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
-            Ok(res) => {
-                if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = res.kind {
-                    let tx = tx.clone();
-                    rt.spawn(async move {
-                        tx.send(()).await.expect("to be able to send message");
+            Ok(event) => {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    let dominated = event.paths.iter().any(|p| {
+                        let canonical = std::fs::canonicalize(p)
+                            .unwrap_or_else(|_| p.clone());
+                        canonical == watched_cert || canonical == watched_key
                     });
+                    if dominated {
+                        let tx = tx.clone();
+                        rt.spawn(async move {
+                            let _ = tx.send(()).await;
+                        });
+                    }
                 }
             }
             Err(e) => tracing::error!("watcher error: {}", e),
@@ -146,23 +158,39 @@ async fn init_certificate_watch(
         Config::default(),
     )?;
 
-    watcher.watch(&serve_config.cert, RecursiveMode::NonRecursive)?;
-    watcher.watch(&serve_config.key, RecursiveMode::NonRecursive)?;
+    let cert_dir = cert_path.parent().ok_or_else(|| {
+        errors::ServeError::Notify(notify::Error::generic(
+            "cert path has no parent directory",
+        ))
+    })?;
+    let key_dir = key_path.parent().ok_or_else(|| {
+        errors::ServeError::Notify(notify::Error::generic(
+            "key path has no parent directory",
+        ))
+    })?;
+
+    watcher.watch(cert_dir, RecursiveMode::NonRecursive)?;
+    if key_dir != cert_dir {
+        watcher.watch(key_dir, RecursiveMode::NonRecursive)?;
+    }
 
     while rx.recv().await.is_some() {
+        sleep(Duration::from_secs(2)).await;
+        while rx.try_recv().is_ok() {}
+
         tracing::info!("reloading rustls configuration");
         match tls_config
             .reload_from_pem_file(serve_config.cert.clone(), serve_config.key.clone())
             .await
         {
             Ok(_) => {
-                tracing::info!("rustls configuration reload successiful");
+                tracing::info!("rustls configuration reload successful");
                 delay = 1;
             }
             Err(e) => {
                 delay *= 2;
                 tracing::error!("rustls reload error: {}", e);
-                tracing::info!("sleep {} nanoseconds before retry", delay);
+                tracing::info!("sleep {} milliseconds before retry", delay);
                 sleep(Duration::from_millis(delay)).await;
                 retry_tx
                     .send(())
