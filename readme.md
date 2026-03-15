@@ -124,4 +124,4 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
 
 ## Minimum supported Rust version
 
-serve MSRV is 1.82
+serve MSRV is 1.85
