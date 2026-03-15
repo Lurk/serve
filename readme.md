@@ -30,6 +30,8 @@ serve [OPTIONS] [COMMAND]
       --disable-compression            Compression layer is enabled by default
       --not-found <NOT_FOUND>          Path to 404 page. By default, 404 is empty
       --ok                             Override with 200 OK. Useful for SPA. Requires --not-found
+      --proxy <PROXY>                  Proxy route in the format /path=http://host:port.
+                                       Can be specified multiple times. HTTPS upstreams are not supported.
   -v, --verbose...                     Increase logging verbosity
   -q, --quiet...                       Decrease logging verbosity
       --log-path <LOG_PATH>            Path to the directory where logs will be stored.
@@ -63,6 +65,25 @@ Options:
       --redirect-http  Redirect HTTP to HTTPS. Works only if 443 port is used
 ```
 
+### proxy
+
+Reverse proxy requests matching a path prefix to an upstream HTTP server.
+
+```
+serve --proxy /api=http://localhost:8080
+```
+
+Multiple proxies can be specified:
+
+```
+serve --proxy /api=http://localhost:8080 --proxy /ws=http://localhost:9090
+```
+
+By default, the matching prefix is stripped before forwarding (e.g., `/api/users` is forwarded as `/users`).
+To disable prefix stripping, use the config file with `strip_prefix = false`.
+The proxy sets `x-forwarded-for` and `x-forwarded-proto` headers on forwarded requests.
+HTTPS upstreams are not supported.
+
 ## Config file:
 
 
@@ -79,6 +100,11 @@ ok = false
 log_level = "trace" # off, error, warn, info, debug, trace
 log_path = "/var/log/serve"
 log_max_files = 7
+
+[[proxy]]
+path = "/api"
+upstream = "http://localhost:8080"
+strip_prefix = true
 
 [subcommand.Tls]
 cert = "/var/certs/localhost.crt"

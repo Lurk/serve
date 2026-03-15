@@ -1,5 +1,6 @@
 mod config;
 mod errors;
+mod proxy;
 mod tls;
 
 use axum::{http::StatusCode, Router};
@@ -20,6 +21,7 @@ use tracing_appender::{
 
 use crate::{
     config::{ServeArgs, Subcommands},
+    proxy::{build_client, proxy_router, ProxyState},
     tls::start_tls_server,
 };
 
@@ -38,9 +40,38 @@ async fn run() -> Result<(), errors::ServeError> {
     let _guard: Option<WorkerGuard> =
         init_logging(&args.log_path, &args.log_max_files, &args.log_level)?;
 
+    let has_proxy = !args.proxy.is_empty();
+
+    for route in &args.proxy {
+        if route.upstream.starts_with("https://") {
+            return Err(errors::ServeError::Proxy(
+                "HTTPS upstreams are not supported".to_string(),
+            ));
+        }
+    }
+
     let serve_dir = ServeDir::new(args.get_path());
 
-    let app = Router::new();
+    let mut app = Router::new();
+
+    if has_proxy {
+        let client = build_client();
+        for route in &args.proxy {
+            tracing::info!(
+                "proxying {} -> {} (strip_prefix: {})",
+                route.path,
+                route.upstream,
+                route.strip_prefix
+            );
+            let state = ProxyState {
+                client: client.clone(),
+                upstream: route.upstream.clone(),
+                prefix: route.path.clone(),
+                strip_prefix: route.strip_prefix,
+            };
+            app = app.nest(&route.path, proxy_router(state));
+        }
+    }
 
     let app = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
@@ -62,18 +93,18 @@ async fn run() -> Result<(), errors::ServeError> {
         app.layer(CompressionLayer::new())
     };
 
-    let service = app
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(
-                    DefaultOnResponse::new()
-                        .level(Level::INFO)
-                        .latency_unit(tower_http::LatencyUnit::Micros)
-                        .include_headers(true),
-                ),
-        )
-        .into_make_service();
+    let app = app.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+            .on_response(
+                DefaultOnResponse::new()
+                    .level(Level::INFO)
+                    .latency_unit(tower_http::LatencyUnit::Micros)
+                    .include_headers(true),
+            ),
+    );
+
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
     match args.subcommand {
         Some(Subcommands::Tls(tls)) => start_tls_server(service, addr, tls).await?,

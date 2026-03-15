@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use serde::{Deserialize, Serialize};
 
-use crate::{errors::ServeError, tls::Tls};
+use crate::{errors::ServeError, proxy::ProxyRoute, tls::Tls};
 
 #[derive(Subcommand, Debug, Serialize, Deserialize, Clone)]
 pub enum Subcommands {
@@ -53,6 +53,9 @@ pub struct ServeArgs {
     /// Override with 200 OK. Useful for SPA. Requires --not-found.
     #[clap(long, requires = "not_found")]
     pub ok: bool,
+    /// Proxy route in the format /path=http://host:port
+    #[clap(long, value_parser = parse_proxy_arg)]
+    pub proxy: Vec<ProxyRoute>,
     /// Log level.
     #[command(flatten)]
     pub log_level: Verbosity,
@@ -61,6 +64,33 @@ pub struct ServeArgs {
     /// Maximum number of log files to keep.
     #[clap(long, requires = "log_path", default_value = "7")]
     pub log_max_files: Option<usize>,
+}
+
+fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
+    let (path, upstream) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid proxy format '{}', expected /path=http://host:port", s))?;
+
+    if !path.starts_with('/') {
+        return Err(format!("proxy path must start with '/', got '{}'", path));
+    }
+
+    if upstream.starts_with("https://") {
+        return Err("HTTPS upstreams are not supported".to_string());
+    }
+
+    if !upstream.starts_with("http://") {
+        return Err(format!(
+            "upstream must start with 'http://', got '{}'",
+            upstream
+        ));
+    }
+
+    Ok(ProxyRoute {
+        path: path.to_string(),
+        upstream: upstream.to_string(),
+        strip_prefix: true,
+    })
 }
 
 impl ServeArgs {
@@ -103,6 +133,11 @@ impl ServeArgs {
             },
             log_path: self.log_path.or(config.log_path),
             log_max_files: self.log_max_files.or(config.log_max_files),
+            proxy: if self.proxy.is_empty() {
+                config.proxy
+            } else {
+                self.proxy
+            },
         })
     }
 

@@ -21,6 +21,8 @@ pub enum ServeError {
     OsStringConversionError(std::ffi::OsString),
     #[error("Config does not have '{0}' field")]
     GenerateConfig(String),
+    #[error("Proxy error: {0}")]
+    Proxy(String),
 }
 
 impl From<std::ffi::OsString> for ServeError {

@@ -6,14 +6,13 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::Request,
+    extract::{connect_info::IntoMakeServiceWithConnectInfo, Request},
     http::{
         header::HOST,
         uri::{Authority, InvalidUri},
         Uri,
     },
     response::{IntoResponse, Redirect, Response},
-    routing::IntoMakeService,
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -40,7 +39,7 @@ pub struct Tls {
 }
 
 pub async fn start_tls_server(
-    service: IntoMakeService<Router>,
+    service: IntoMakeServiceWithConnectInfo<Router, SocketAddr>,
     addr: SocketAddr,
     tls: Tls,
 ) -> Result<(), errors::ServeError> {
