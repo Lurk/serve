@@ -1,2 +1,5 @@
 /target
 /log
+*.crt
+*.key
+serve.toml
