@@ -67,9 +67,12 @@ pub struct ServeArgs {
 }
 
 fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
-    let (path, upstream) = s
-        .split_once('=')
-        .ok_or_else(|| format!("invalid proxy format '{}', expected /path=http://host:port", s))?;
+    let (path, upstream) = s.split_once('=').ok_or_else(|| {
+        format!(
+            "invalid proxy format '{}', expected /path=http://host:port",
+            s
+        )
+    })?;
 
     if !path.starts_with('/') {
         return Err(format!("proxy path must start with '/', got '{}'", path));

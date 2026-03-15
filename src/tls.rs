@@ -17,7 +17,9 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Args;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher};
+use notify::{
+    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
@@ -127,10 +129,10 @@ async fn init_certificate_watch(
     let rt = Handle::current();
     let retry_tx = tx.clone();
 
-    let cert_path = std::fs::canonicalize(&serve_config.cert)
-        .unwrap_or_else(|_| serve_config.cert.clone());
-    let key_path = std::fs::canonicalize(&serve_config.key)
-        .unwrap_or_else(|_| serve_config.key.clone());
+    let cert_path =
+        std::fs::canonicalize(&serve_config.cert).unwrap_or_else(|_| serve_config.cert.clone());
+    let key_path =
+        std::fs::canonicalize(&serve_config.key).unwrap_or_else(|_| serve_config.key.clone());
 
     let watched_cert = cert_path.clone();
     let watched_key = key_path.clone();
@@ -140,8 +142,7 @@ async fn init_certificate_watch(
             Ok(event) => {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     let dominated = event.paths.iter().any(|p| {
-                        let canonical = std::fs::canonicalize(p)
-                            .unwrap_or_else(|_| p.clone());
+                        let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
                         canonical == watched_cert || canonical == watched_key
                     });
                     if dominated {
@@ -158,14 +159,10 @@ async fn init_certificate_watch(
     )?;
 
     let cert_dir = cert_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic(
-            "cert path has no parent directory",
-        ))
+        errors::ServeError::Notify(notify::Error::generic("cert path has no parent directory"))
     })?;
     let key_dir = key_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic(
-            "key path has no parent directory",
-        ))
+        errors::ServeError::Notify(notify::Error::generic("key path has no parent directory"))
     })?;
 
     watcher.watch(cert_dir, RecursiveMode::NonRecursive)?;
