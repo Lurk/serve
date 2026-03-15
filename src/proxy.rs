@@ -71,6 +71,10 @@ async fn proxy_handler(
     }
     headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
 
+    // Normalize to HTTP/1.1 — upstream is always plain HTTP, even if the
+    // incoming connection was negotiated as HTTP/2 over TLS.
+    *req.version_mut() = axum::http::Version::HTTP_11;
+
     match state.client.request(req).await {
         Ok(resp) => {
             let (parts, body) = resp.into_parts();
