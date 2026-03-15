@@ -55,6 +55,7 @@ pub struct ServeArgs {
     pub ok: bool,
     /// Proxy route in the format /path=http://host:port
     #[clap(long, value_parser = parse_proxy_arg)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxy: Vec<ProxyRoute>,
     /// Log level.
     #[command(flatten)]
