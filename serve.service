@@ -1,0 +1,21 @@
+[Unit]
+Description=Serve - Static File Server
+After=network.target
+
+[Service]
+Type=simple
+User=serve
+Group=serve
+ExecStart=/usr/local/bin/serve -c /etc/serve/serve.toml
+WorkingDirectory=/var/www/serve
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+ReadWritePaths=/var/log/serve
+
+[Install]
+WantedBy=multi-user.target

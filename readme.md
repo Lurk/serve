@@ -114,6 +114,51 @@ redirect_http = true
 
 
 
+## Running as a Linux systemd service
+
+### Install
+
+```shell
+sudo ./install.sh install
+```
+
+To use a pre-built binary instead of building with cargo:
+
+```shell
+sudo ./install.sh install --binary /path/to/serve
+```
+
+### Configure
+
+Edit the config file at `/etc/serve/serve.toml`:
+
+```shell
+sudo nano /etc/serve/serve.toml
+```
+
+Then restart the service:
+
+```shell
+sudo systemctl restart serve.service
+```
+
+### Manage
+
+```shell
+sudo systemctl start serve.service
+sudo systemctl stop serve.service
+sudo systemctl status serve.service
+journalctl -u serve.service -f
+```
+
+### Uninstall
+
+```shell
+sudo ./install.sh uninstall
+```
+
+This removes the binary, systemd unit, and service user. Config, log, and content directories are preserved — remove them manually if desired.
+
 ## Generate self signed certificate for localhost
 
 ```shell
