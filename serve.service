@@ -15,7 +15,8 @@ RestartSec=5
 ProtectSystem=strict
 ProtectHome=read-only
 NoNewPrivileges=true
-ReadWritePaths=/var/log/serve
+ReadWritePaths=/var/log/serve /var/www/serve
+ReadOnlyPaths=/etc/letsencrypt
 
 [Install]
 WantedBy=multi-user.target
