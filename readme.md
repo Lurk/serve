@@ -142,6 +142,10 @@ Then restart the service:
 sudo systemctl restart serve.service
 ```
 
+### Firewall
+
+If binding to ports 443/80, ensure they are open in both the OS firewall and any cloud firewall (e.g., Hetzner Cloud Firewall). The install script configures `ufw` automatically if it is active, but cloud firewalls must be configured manually.
+
 ### Manage
 
 ```shell

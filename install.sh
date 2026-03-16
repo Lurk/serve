@@ -115,6 +115,16 @@ TOML
     systemctl enable "$SERVICE_NAME"
     systemctl start "$SERVICE_NAME"
 
+    # Configure firewall if ufw is active
+    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "^Status: active"; then
+        echo "Configuring ufw firewall..."
+        ufw allow 443/tcp
+        ufw allow 80/tcp
+    fi
+
+    echo ""
+    echo "NOTE: If you are using a cloud provider (e.g., Hetzner), make sure ports 443 and 80"
+    echo "      are also open in the cloud firewall. install.sh cannot configure that automatically."
     echo ""
     echo "serve has been installed and started."
     echo "  Config:  ${CONFIG_FILE}"

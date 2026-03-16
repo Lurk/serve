@@ -11,10 +11,14 @@ WorkingDirectory=/var/www/serve
 Restart=on-failure
 RestartSec=5
 
+# Allow binding to privileged ports (443) as non-root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 # Hardening
 ProtectSystem=strict
 ProtectHome=read-only
-NoNewPrivileges=true
+NoNewPrivileges=false
 ReadWritePaths=/var/log/serve /var/www/serve
 ReadOnlyPaths=/etc/letsencrypt
 
