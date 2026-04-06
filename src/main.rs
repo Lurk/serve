@@ -73,6 +73,13 @@ async fn run() -> Result<(), errors::ServeError> {
         }
     }
 
+    let compression = if args.disable_compression {
+        None
+    } else {
+        tracing::info!("compression enabled");
+        Some(CompressionLayer::new())
+    };
+
     let app = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
         let serve_dir = if args.ok {
@@ -81,16 +88,23 @@ async fn run() -> Result<(), errors::ServeError> {
         } else {
             serve_dir.not_found_service(ServeFile::new(path))
         };
-        app.fallback_service(serve_dir)
+        match compression {
+            Some(layer) => app.fallback_service(
+                Router::new()
+                    .fallback_service(serve_dir)
+                    .layer(layer),
+            ),
+            None => app.fallback_service(serve_dir),
+        }
     } else {
-        app.fallback_service(serve_dir)
-    };
-
-    let app = if args.disable_compression {
-        app
-    } else {
-        tracing::info!("compression enabled");
-        app.layer(CompressionLayer::new())
+        match compression {
+            Some(layer) => app.fallback_service(
+                Router::new()
+                    .fallback_service(serve_dir)
+                    .layer(layer),
+            ),
+            None => app.fallback_service(serve_dir),
+        }
     };
 
     let app = app.layer(

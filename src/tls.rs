@@ -1,6 +1,8 @@
 use std::{
+    io,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,6 +18,8 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use rustls::ServerConfig;
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use clap::Args;
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
@@ -26,6 +30,27 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::errors;
+
+fn build_server_config(cert_path: &PathBuf, key_path: &PathBuf) -> Result<Arc<ServerConfig>, errors::ServeError> {
+    let cert_pem = std::fs::read(cert_path)?;
+    let key_pem = std::fs::read(key_path)?;
+
+    let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(&cert_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let key = PrivateKeyDer::from_pem_slice(&key_pem)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    Ok(Arc::new(config))
+}
 
 #[derive(Args, Debug, Serialize, Deserialize, Clone)]
 pub struct Tls {
@@ -45,7 +70,7 @@ pub async fn start_tls_server(
     addr: SocketAddr,
     tls: Tls,
 ) -> Result<(), errors::ServeError> {
-    let config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
+    let config = RustlsConfig::from_config(build_server_config(&tls.cert, &tls.key)?);
     tracing::info!("listening on {} with TLS", addr);
 
     let (server, http_to_https_redirect, tls_watcher) = join!(
@@ -175,11 +200,9 @@ async fn init_certificate_watch(
         while rx.try_recv().is_ok() {}
 
         tracing::info!("reloading rustls configuration");
-        match tls_config
-            .reload_from_pem_file(serve_config.cert.clone(), serve_config.key.clone())
-            .await
-        {
-            Ok(_) => {
+        match build_server_config(&serve_config.cert, &serve_config.key) {
+            Ok(new_config) => {
+                tls_config.reload_from_config(new_config);
                 tracing::info!("rustls configuration reload successful");
                 delay = 1;
             }
