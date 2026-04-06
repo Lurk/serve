@@ -131,7 +131,7 @@ log_max_files = 7
 #[cfg(target_os = "linux")]
 fn generate_systemd_unit(config_path: &Path) -> String {
     format!(
-        r#"[Unit]
+        r"[Unit]
 Description=Serve - Static File Server
 After=network.target
 
@@ -155,7 +155,7 @@ ReadOnlyPaths=/etc/letsencrypt
 
 [Install]
 WantedBy=multi-user.target
-"#,
+",
         user = SERVICE_USER,
         binary = BINARY_INSTALL_PATH,
         config = config_path.display(),
@@ -268,14 +268,14 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         run_command_ok(
             "chown",
             &[
-                &format!("{}:{}", SERVICE_USER, SERVICE_USER),
+                &format!("{SERVICE_USER}:{SERVICE_USER}"),
                 "/var/log/serve",
             ],
         );
         run_command_ok(
             "chown",
             &[
-                &format!("{}:{}", SERVICE_USER, SERVICE_USER),
+                &format!("{SERVICE_USER}:{SERVICE_USER}"),
                 "/var/www/serve",
             ],
         );
@@ -283,7 +283,7 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         // Write systemd unit
         let unit = generate_systemd_unit(&config_path);
         std::fs::write(SYSTEMD_UNIT_PATH, unit)?;
-        println!("Systemd unit installed to {}", SYSTEMD_UNIT_PATH);
+        println!("Systemd unit installed to {SYSTEMD_UNIT_PATH}");
 
         // Enable and start
         run_command("systemctl", &["daemon-reload"])?;
@@ -319,14 +319,14 @@ pub fn uninstall() -> Result<(), ServeError> {
 
         if Path::new(SYSTEMD_UNIT_PATH).exists() {
             std::fs::remove_file(SYSTEMD_UNIT_PATH)?;
-            println!("Removed {}", SYSTEMD_UNIT_PATH);
+            println!("Removed {SYSTEMD_UNIT_PATH}");
         }
 
         run_command_ok("systemctl", &["daemon-reload"]);
 
         if Path::new(BINARY_INSTALL_PATH).exists() {
             std::fs::remove_file(BINARY_INSTALL_PATH)?;
-            println!("Removed {}", BINARY_INSTALL_PATH);
+            println!("Removed {BINARY_INSTALL_PATH}");
         }
 
         run_command_ok("userdel", &[SERVICE_USER]);
