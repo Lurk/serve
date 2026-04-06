@@ -267,17 +267,11 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         // Set directory ownership
         run_command_ok(
             "chown",
-            &[
-                &format!("{SERVICE_USER}:{SERVICE_USER}"),
-                "/var/log/serve",
-            ],
+            &[&format!("{SERVICE_USER}:{SERVICE_USER}"), "/var/log/serve"],
         );
         run_command_ok(
             "chown",
-            &[
-                &format!("{SERVICE_USER}:{SERVICE_USER}"),
-                "/var/www/serve",
-            ],
+            &[&format!("{SERVICE_USER}:{SERVICE_USER}"), "/var/www/serve"],
         );
 
         // Write systemd unit

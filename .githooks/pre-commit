@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if ! cargo fmt --check; then
+    echo ""
+    echo "Commit blocked: code is not formatted."
+    echo "Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+if ! cargo clippy --locked --all-features --all-targets -- -D warnings; then
+    echo ""
+    echo "Commit blocked: clippy found issues."
+    exit 1
+fi
