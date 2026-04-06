@@ -1,6 +1,7 @@
 use thiserror::Error;
 use tracing_appender::rolling::InitError;
 
+#[allow(dead_code)] // variants constructed in platform-specific code
 #[derive(Error, Debug)]
 pub enum ServeError {
     #[error("Notify errors {0}")]
@@ -31,6 +32,6 @@ pub enum ServeError {
 
 impl From<std::ffi::OsString> for ServeError {
     fn from(value: std::ffi::OsString) -> Self {
-        ServeError::OsStringConversionError(value)
+        Self::OsStringConversionError(value)
     }
 }

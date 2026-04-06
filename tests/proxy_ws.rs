@@ -23,7 +23,7 @@ async fn start_upstream() -> SocketAddr {
         while let Some(Ok(msg)) = socket.recv().await {
             match msg {
                 Message::Text(text) => {
-                    let echo = format!("echo: {}", text);
+                    let echo = format!("echo: {text}");
                     if socket.send(Message::Text(echo.into())).await.is_err() {
                         break;
                     }
@@ -63,7 +63,7 @@ fn build_proxy_app(upstream_addr: SocketAddr, prefix: &str, strip_prefix: bool) 
     let client = build_client();
     let state = ProxyState {
         client,
-        upstream: format!("http://{}", upstream_addr),
+        upstream: format!("http://{upstream_addr}"),
         prefix: prefix.to_string(),
         strip_prefix,
     };
@@ -94,7 +94,7 @@ async fn test_websocket_proxy_basic() {
     let upstream_addr = start_upstream().await;
     let proxy_addr = start_proxy(upstream_addr, "/api", true).await;
 
-    let url = format!("ws://{}/api/ws", proxy_addr);
+    let url = format!("ws://{proxy_addr}/api/ws");
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
     ws.send(TungsteniteMessage::Text("hello".into()))
@@ -119,7 +119,7 @@ async fn test_websocket_proxy_with_strip_prefix_false() {
     let upstream_addr = start_upstream().await;
     let proxy_addr = start_proxy(upstream_addr, "/test_prefix", false).await;
 
-    let url = format!("ws://{}/test_prefix/ws", proxy_addr);
+    let url = format!("ws://{proxy_addr}/test_prefix/ws");
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
     ws.send(TungsteniteMessage::Text("ping".into()))
@@ -139,7 +139,7 @@ async fn test_regular_http_through_proxy() {
 
     let client: Client<_, axum::body::Body> = Client::builder(TokioExecutor::new()).build_http();
 
-    let uri: hyper::Uri = format!("http://{}/api/health", proxy_addr).parse().unwrap();
+    let uri: hyper::Uri = format!("http://{proxy_addr}/api/health").parse().unwrap();
     let resp = client.get(uri).await.unwrap();
 
     assert_eq!(resp.status(), 200);
@@ -152,7 +152,7 @@ async fn test_websocket_upgrade_returns_101() {
     let upstream_addr = start_upstream().await;
     let proxy_addr = start_proxy(upstream_addr, "/api", true).await;
 
-    let url = format!("ws://{}/api/ws", proxy_addr);
+    let url = format!("ws://{proxy_addr}/api/ws");
     let (_, response) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
     assert_eq!(response.status(), 101);

@@ -219,7 +219,7 @@ async fn init_certificate_watch(
                     .await
                     .expect("to be able to send retry message");
             }
-        };
+        }
     }
 
     Ok(())

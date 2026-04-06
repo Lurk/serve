@@ -29,7 +29,7 @@ use crate::{
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -53,7 +53,7 @@ async fn run() -> Result<(), errors::ServeError> {
     let addr = SocketAddr::from((args.addr, args.port));
 
     let _guard: Option<WorkerGuard> =
-        init_logging(&args.log_path, &args.log_max_files, &args.log_level)?;
+        init_logging(args.log_path.as_ref(), args.log_max_files, args.log_level)?;
 
     let has_proxy = !args.proxy.is_empty();
 
@@ -138,16 +138,16 @@ async fn run() -> Result<(), errors::ServeError> {
             axum_server::bind(addr).serve(service).await?;
         }
         _ => unreachable!("management subcommands handled above"),
-    };
+    }
     Ok(())
 }
 
 fn init_logging(
-    log_path: &Option<PathBuf>,
-    log_max_files: &Option<usize>,
-    log_level: &Verbosity,
+    log_path: Option<&PathBuf>,
+    log_max_files: Option<usize>,
+    log_level: Verbosity,
 ) -> Result<Option<WorkerGuard>, errors::ServeError> {
-    if let Some(log_path) = log_path.as_ref() {
+    if let Some(log_path) = log_path {
         if !log_path.exists() {
             std::fs::create_dir_all(log_path)?;
         } else if !log_path.is_dir() {
@@ -162,19 +162,19 @@ fn init_logging(
             .filename_prefix("serve")
             .filename_suffix("log")
             .build(log_path)?;
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
         tracing_subscriber::fmt()
-            .with_max_level(*log_level)
+            .with_max_level(log_level)
             .with_writer(non_blocking)
             .compact()
             .init();
 
-        return Ok(Some(_guard));
+        return Ok(Some(guard));
     }
 
     tracing_subscriber::fmt()
-        .with_max_level(*log_level)
+        .with_max_level(log_level)
         .compact()
         .init();
 

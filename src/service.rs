@@ -21,7 +21,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<String, ServeError> {
     let output = std::process::Command::new(cmd)
         .args(args)
         .output()
-        .map_err(|e| ServeError::Service(format!("Failed to execute {}: {}", cmd, e)))?;
+        .map_err(|e| ServeError::Service(format!("Failed to execute {cmd}: {e}")))?;
 
     if !output.status.success() {
         return Err(ServeError::CommandFailed {
@@ -88,7 +88,7 @@ fn discover_config_path() -> Result<PathBuf, ServeError> {
                 "Service is not installed. Could not read launchd plist.".to_string(),
             )
         })?;
-        let lines: Vec<&str> = content.lines().map(|l| l.trim()).collect();
+        let lines: Vec<&str> = content.lines().map(str::trim).collect();
         for (i, line) in lines.iter().enumerate() {
             if line.contains("-c") && line.contains("<string>") {
                 if let Some(next) = lines.get(i + 1) {
@@ -236,15 +236,15 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
     // Validate config
     let content = std::fs::read_to_string(&config_path)?;
     let _config: ServeArgs = toml::from_str(&content)
-        .map_err(|e| ServeError::Service(format!("Invalid config: {}", e)))?;
+        .map_err(|e| ServeError::Service(format!("Invalid config: {e}")))?;
     println!("Config validated: {}", config_path.display());
 
     // Copy binary
     let current_exe = std::env::current_exe().map_err(|e| {
-        ServeError::Service(format!("Could not determine current binary path: {}", e))
+        ServeError::Service(format!("Could not determine current binary path: {e}"))
     })?;
     std::fs::copy(&current_exe, BINARY_INSTALL_PATH)?;
-    println!("Binary installed to {}", BINARY_INSTALL_PATH);
+    println!("Binary installed to {BINARY_INSTALL_PATH}");
 
     // Create directories
     create_dir_if_needed("/var/log/serve")?;
@@ -297,7 +297,7 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         // Write launchd plist
         let plist = generate_launchd_plist(&config_path);
         std::fs::write(LAUNCHD_PLIST_PATH, plist)?;
-        println!("Launchd plist installed to {}", LAUNCHD_PLIST_PATH);
+        println!("Launchd plist installed to {LAUNCHD_PLIST_PATH}");
 
         // Bootstrap (try modern API first, fall back to legacy)
         if run_command("launchctl", &["bootstrap", "system", LAUNCHD_PLIST_PATH]).is_err() {
@@ -336,17 +336,17 @@ pub fn uninstall() -> Result<(), ServeError> {
     {
         run_command_ok(
             "launchctl",
-            &["bootout", &format!("system/{}", LAUNCHD_LABEL)],
+            &["bootout", &format!("system/{LAUNCHD_LABEL}")],
         );
 
         if Path::new(LAUNCHD_PLIST_PATH).exists() {
             std::fs::remove_file(LAUNCHD_PLIST_PATH)?;
-            println!("Removed {}", LAUNCHD_PLIST_PATH);
+            println!("Removed {LAUNCHD_PLIST_PATH}");
         }
 
         if Path::new(BINARY_INSTALL_PATH).exists() {
             std::fs::remove_file(BINARY_INSTALL_PATH)?;
-            println!("Removed {}", BINARY_INSTALL_PATH);
+            println!("Removed {BINARY_INSTALL_PATH}");
         }
     }
 
@@ -371,7 +371,7 @@ pub fn validate(args: &ValidateArgs) -> Result<(), ServeError> {
 
     let content = std::fs::read_to_string(&config_path)?;
     let config: ServeArgs = toml::from_str(&content)
-        .map_err(|e| ServeError::Service(format!("Invalid config: {}", e)))?;
+        .map_err(|e| ServeError::Service(format!("Invalid config: {e}")))?;
 
     println!("Configuration is valid:");
     println!("  path: {}", config.get_path().display());
@@ -415,7 +415,7 @@ pub fn restart() -> Result<(), ServeError> {
     {
         run_command(
             "launchctl",
-            &["kickstart", "-k", &format!("system/{}", LAUNCHD_LABEL)],
+            &["kickstart", "-k", &format!("system/{LAUNCHD_LABEL}")],
         )?;
     }
 
@@ -432,7 +432,7 @@ pub fn reload() -> Result<(), ServeError> {
 
     let content = std::fs::read_to_string(&config_path)?;
     let _config: ServeArgs = toml::from_str(&content)
-        .map_err(|e| ServeError::Service(format!("Invalid config, aborting reload: {}", e)))?;
+        .map_err(|e| ServeError::Service(format!("Invalid config, aborting reload: {e}")))?;
 
     #[cfg(target_os = "linux")]
     {
@@ -443,7 +443,7 @@ pub fn reload() -> Result<(), ServeError> {
     {
         run_command(
             "launchctl",
-            &["kickstart", "-k", &format!("system/{}", LAUNCHD_LABEL)],
+            &["kickstart", "-k", &format!("system/{LAUNCHD_LABEL}")],
         )?;
     }
 
@@ -451,6 +451,7 @@ pub fn reload() -> Result<(), ServeError> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 pub fn status() -> Result<(), ServeError> {
     // Get installed binary version
     let version = if Path::new(BINARY_INSTALL_PATH).exists() {
@@ -458,7 +459,7 @@ pub fn status() -> Result<(), ServeError> {
     } else {
         "not installed".to_string()
     };
-    println!("Version: {}", version);
+    println!("Version: {version}");
 
     // Get config path
     match discover_config_path() {
@@ -482,10 +483,7 @@ pub fn status() -> Result<(), ServeError> {
 
     #[cfg(target_os = "macos")]
     {
-        let output = run_command_ok(
-            "launchctl",
-            &["print", &format!("system/{}", LAUNCHD_LABEL)],
-        );
+        let output = run_command_ok("launchctl", &["print", &format!("system/{LAUNCHD_LABEL}")]);
         if output.is_empty() {
             println!("Status: not loaded");
         } else if output.contains("state = running") {

@@ -17,10 +17,12 @@ use tokio_tungstenite::tungstenite::{
     protocol::CloseFrame as TungsteniteCloseFrame, Message as TungsteniteMessage,
 };
 
-fn default_strip_prefix() -> bool {
+#[allow(dead_code)] // used as serde default
+const fn default_strip_prefix() -> bool {
     true
 }
 
+#[allow(dead_code)] // constructed by serde
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyRoute {
     pub path: String,
@@ -37,6 +39,7 @@ pub struct ProxyState {
     pub strip_prefix: bool,
 }
 
+#[must_use]
 pub fn build_client() -> Client<hyper_util::client::legacy::connect::HttpConnector, axum::body::Body>
 {
     Client::builder(TokioExecutor::new()).build_http()
@@ -78,8 +81,7 @@ async fn proxy_handler(
     let path_and_query = req
         .uri()
         .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/")
+        .map_or("/", axum::http::uri::PathAndQuery::as_str)
         .to_string();
 
     if is_ws {
@@ -134,7 +136,7 @@ async fn proxy_handler(
             }
             Err(e) => {
                 tracing::error!("proxy error: {}", e);
-                (StatusCode::BAD_GATEWAY, format!("Bad Gateway: {}", e)).into_response()
+                (StatusCode::BAD_GATEWAY, format!("Bad Gateway: {e}")).into_response()
             }
         }
     }
@@ -182,8 +184,8 @@ async fn ws_relay(client_ws: WebSocket, upstream_uri: Uri) {
     };
 
     tokio::select! {
-        _ = client_to_upstream => {}
-        _ = upstream_to_client => {}
+        () = client_to_upstream => {}
+        () = upstream_to_client => {}
     }
 }
 

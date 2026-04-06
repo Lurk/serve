@@ -54,20 +54,20 @@ pub enum Subcommands {
     Status,
 }
 
-const CONFIG_HELP: &str = r#"Path to the configuration file.
+const CONFIG_HELP: &str = r"Path to the configuration file.
 Command line arguments override the configuration file.
 If configuration file does not exist, it will be created with the current
 command line arguments.
 
 Supported format is TOML.
-"#;
+";
 
-const LOG_PATH_HELP: &str = r#"Path to the directory where logs will be stored.
+const LOG_PATH_HELP: &str = r"Path to the directory where logs will be stored.
 If not specified, logs will be printed to stdout.
 If specified, logs will be written to the file: log_path/serve.YYYY-MM-DD.log
 and rotated daily.
 If the directory does not exist, it will be created.
-"#;
+";
 
 #[derive(Parser, Debug, Serialize, Deserialize, Clone)]
 #[command(version, about, long_about = None)]
@@ -110,15 +110,12 @@ pub struct ServeArgs {
 }
 
 fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
-    let (path, upstream) = s.split_once('=').ok_or_else(|| {
-        format!(
-            "invalid proxy format '{}', expected /path=http://host:port",
-            s
-        )
-    })?;
+    let (path, upstream) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid proxy format '{s}', expected /path=http://host:port"))?;
 
     if !path.starts_with('/') {
-        return Err(format!("proxy path must start with '/', got '{}'", path));
+        return Err(format!("proxy path must start with '/', got '{path}'"));
     }
 
     if upstream.starts_with("https://") {
@@ -127,8 +124,7 @@ fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
 
     if !upstream.starts_with("http://") {
         return Err(format!(
-            "upstream must start with 'http://', got '{}'",
-            upstream
+            "upstream must start with 'http://', got '{upstream}'"
         ));
     }
 
@@ -141,7 +137,7 @@ fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
 
 impl ServeArgs {
     pub fn get_path(&self) -> PathBuf {
-        self.path.clone().unwrap_or(".".into())
+        self.path.clone().unwrap_or_else(|| ".".into())
     }
 
     pub fn resolve_config(self) -> Result<Self, ServeError> {
@@ -202,8 +198,8 @@ impl ServeArgs {
 
         config.subcommand = match config.subcommand {
             Some(Subcommands::Tls(ref tls)) => Some(Subcommands::Tls(Tls {
-                cert: tls.cert.canonicalize().unwrap_or(tls.cert.clone()),
-                key: tls.key.canonicalize().unwrap_or(tls.key.clone()),
+                cert: tls.cert.canonicalize().unwrap_or_else(|_| tls.cert.clone()),
+                key: tls.key.canonicalize().unwrap_or_else(|_| tls.key.clone()),
                 redirect_http: tls.redirect_http,
             })),
             _ => None,
