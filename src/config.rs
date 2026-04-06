@@ -217,3 +217,36 @@ impl ServeArgs {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_proxy_valid() {
+        let route = parse_proxy_arg("/api=http://localhost:8080").unwrap();
+        assert_eq!(route.path, "/api");
+        assert_eq!(route.upstream, "http://localhost:8080");
+        assert!(route.strip_prefix);
+    }
+
+    #[test]
+    fn parse_proxy_missing_equals() {
+        assert!(parse_proxy_arg("/api http://localhost:8080").is_err());
+    }
+
+    #[test]
+    fn parse_proxy_missing_leading_slash() {
+        assert!(parse_proxy_arg("api=http://localhost:8080").is_err());
+    }
+
+    #[test]
+    fn parse_proxy_https_rejected() {
+        assert!(parse_proxy_arg("/api=https://localhost:8080").is_err());
+    }
+
+    #[test]
+    fn parse_proxy_non_http_rejected() {
+        assert!(parse_proxy_arg("/api=ftp://localhost").is_err());
+    }
+}

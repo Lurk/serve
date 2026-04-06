@@ -62,7 +62,7 @@ fn upstream_uri(state: &ProxyState, path_and_query: &str) -> Result<Uri, Respons
 async fn proxy_handler(
     State(state): State<ProxyState>,
     ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
-    mut req: Request,
+    req: Request,
 ) -> Response {
     tracing::debug!(
         method = %req.method(),
@@ -84,60 +84,69 @@ async fn proxy_handler(
         .map_or("/", axum::http::uri::PathAndQuery::as_str)
         .to_string();
 
+    let uri = match upstream_uri(&state, &path_and_query) {
+        Ok(uri) => uri,
+        Err(resp) => return resp,
+    };
+
     if is_ws {
-        let uri = match upstream_uri(&state, &path_and_query) {
-            Ok(uri) => uri,
-            Err(resp) => return resp,
-        };
-
-        let (mut parts, _body) = req.into_parts();
-        match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-            Ok(ws_upgrade) => {
-                tracing::info!(upstream = %uri, "WebSocket upgrade accepted, starting relay");
-                ws_upgrade.on_upgrade(move |client_socket| ws_relay(client_socket, uri))
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    version = ?parts.version,
-                    method = %parts.method,
-                    upgrade = ?parts.headers.get(axum::http::header::UPGRADE),
-                    connection = ?parts.headers.get(axum::http::header::CONNECTION),
-                    sec_ws_version = ?parts.headers.get(axum::http::header::SEC_WEBSOCKET_VERSION),
-                    "WebSocket upgrade extraction failed"
-                );
-                e.into_response()
-            }
-        }
+        handle_ws_proxy(req, state, uri).await
     } else {
-        let uri = match upstream_uri(&state, &path_and_query) {
-            Ok(uri) => uri,
-            Err(resp) => return resp,
-        };
+        handle_http_proxy(req, state, uri, client_addr).await
+    }
+}
 
-        *req.uri_mut() = uri;
-
-        let headers = req.headers_mut();
-        headers.remove(axum::http::header::HOST);
-        headers.remove(axum::http::header::CONNECTION);
-
-        if let Ok(val) = HeaderValue::from_str(&client_addr.ip().to_string()) {
-            headers.insert("x-forwarded-for", val);
+async fn handle_ws_proxy(req: Request, state: ProxyState, uri: Uri) -> Response {
+    let (mut parts, _body) = req.into_parts();
+    match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
+        Ok(ws_upgrade) => {
+            tracing::info!(upstream = %uri, "WebSocket upgrade accepted, starting relay");
+            ws_upgrade.on_upgrade(move |client_socket| ws_relay(client_socket, uri))
         }
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                version = ?parts.version,
+                method = %parts.method,
+                upgrade = ?parts.headers.get(axum::http::header::UPGRADE),
+                connection = ?parts.headers.get(axum::http::header::CONNECTION),
+                sec_ws_version = ?parts.headers.get(axum::http::header::SEC_WEBSOCKET_VERSION),
+                "WebSocket upgrade extraction failed"
+            );
+            e.into_response()
+        }
+    }
+}
 
-        *req.version_mut() = axum::http::Version::HTTP_11;
+async fn handle_http_proxy(
+    mut req: Request,
+    state: ProxyState,
+    uri: Uri,
+    client_addr: SocketAddr,
+) -> Response {
+    *req.uri_mut() = uri;
 
-        match state.client.request(req).await {
-            Ok(resp) => {
-                let (parts, body) = resp.into_parts();
-                let body = body.map_err(axum::Error::new).boxed();
-                Response::from_parts(parts, axum::body::Body::new(body))
-            }
-            Err(e) => {
-                tracing::error!("proxy error: {}", e);
-                (StatusCode::BAD_GATEWAY, format!("Bad Gateway: {e}")).into_response()
-            }
+    let headers = req.headers_mut();
+    headers.remove(axum::http::header::HOST);
+    headers.remove(axum::http::header::CONNECTION);
+
+    if let Ok(val) = HeaderValue::from_str(&client_addr.ip().to_string()) {
+        headers.insert("x-forwarded-for", val);
+    }
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+
+    // Forced to HTTP/1.1: hyper-util client is built with http1 feature only
+    *req.version_mut() = axum::http::Version::HTTP_11;
+
+    match state.client.request(req).await {
+        Ok(resp) => {
+            let (parts, body) = resp.into_parts();
+            let body = body.map_err(axum::Error::new).boxed();
+            Response::from_parts(parts, axum::body::Body::new(body))
+        }
+        Err(e) => {
+            tracing::error!("proxy error: {}", e);
+            (StatusCode::BAD_GATEWAY, format!("Bad Gateway: {e}")).into_response()
         }
     }
 }

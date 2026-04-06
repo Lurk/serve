@@ -2,7 +2,7 @@
 name = "serve"
 authors = ["Serhiy Barhamon"]
 description = "A simple tool to serve static files from a directory."
-rust-version = "1.82.0"
+rust-version = "1.85.0"
 repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls", "proxy"]
@@ -40,7 +40,7 @@ rustls = { version = "0.23", default-features = false }
 rustls-pki-types = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio-tungstenite = "0.28"
-toml = "1.1.0+spec-1.1.0"
+toml = "1.1"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

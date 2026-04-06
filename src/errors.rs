@@ -14,7 +14,7 @@ pub enum ServeError {
     InvalidPath(String),
     #[error("Log initialization error: {0}")]
     LogInit(#[from] InitError),
-    #[error("{0}\n\n{0:?}")]
+    #[error("{0}")]
     Toml(#[from] toml::de::Error),
     #[error("toml serialize error: {0}")]
     TomlEdit(#[from] toml::ser::Error),

@@ -95,27 +95,23 @@ async fn run() -> Result<(), errors::ServeError> {
         Some(CompressionLayer::new())
     };
 
-    let app = if let Some(path) = args.not_found.as_ref() {
+    let file_service = if let Some(path) = args.not_found.as_ref() {
         tracing::info!("custom 404 page");
-        let serve_dir = if args.ok {
+        if args.ok {
             tracing::info!("overriding 404 with 200 OK");
-            serve_dir.fallback(SetStatus::new(ServeFile::new(path), StatusCode::OK))
+            Router::new().fallback_service(
+                serve_dir.fallback(SetStatus::new(ServeFile::new(path), StatusCode::OK)),
+            )
         } else {
-            serve_dir.not_found_service(ServeFile::new(path))
-        };
-        match compression {
-            Some(layer) => {
-                app.fallback_service(Router::new().fallback_service(serve_dir).layer(layer))
-            }
-            None => app.fallback_service(serve_dir),
+            Router::new().fallback_service(serve_dir.not_found_service(ServeFile::new(path)))
         }
     } else {
-        match compression {
-            Some(layer) => {
-                app.fallback_service(Router::new().fallback_service(serve_dir).layer(layer))
-            }
-            None => app.fallback_service(serve_dir),
-        }
+        Router::new().fallback_service(serve_dir)
+    };
+
+    let app = match compression {
+        Some(layer) => app.fallback_service(file_service.layer(layer)),
+        None => app.fallback_service(file_service),
     };
 
     let app = app.layer(

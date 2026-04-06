@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -32,8 +32,8 @@ use tracing::Level;
 use crate::errors;
 
 fn build_server_config(
-    cert_path: &PathBuf,
-    key_path: &PathBuf,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> Result<Arc<ServerConfig>, errors::ServeError> {
     let cert_pem = std::fs::read(cert_path)?;
     let key_pem = std::fs::read(key_path)?;
@@ -113,6 +113,18 @@ async fn init_http_to_https_redirect(
     Ok(())
 }
 
+fn bad_request() -> Response {
+    Response::builder().status(400).body(Body::empty()).unwrap()
+}
+
+fn rewrite_authority_https(host: &str) -> Result<Authority, InvalidUri> {
+    let authority = match host.rsplit_once(':') {
+        Some((hostname, "80")) => format!("{hostname}:443"),
+        _ => host.to_owned(),
+    };
+    authority.parse()
+}
+
 async fn redirect(req: Request) -> Response {
     let mut parts = req.uri().clone().into_parts();
     parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
@@ -123,26 +135,24 @@ async fn redirect(req: Request) -> Response {
 
     let Some(host) = req.headers().get(HOST) else {
         tracing::error!("HOST is not present in headers.");
-        return Response::builder().status(400).body(Body::empty()).unwrap();
+        return bad_request();
     };
 
-    let Ok(https_host) = host.to_str() else {
+    let Ok(host_str) = host.to_str() else {
         tracing::error!("HOST from headers is not valid str.");
-        return Response::builder().status(400).body(Body::empty()).unwrap();
+        return bad_request();
     };
 
-    let authority: Result<Authority, InvalidUri> = https_host.replace("80", "443").parse();
+    let Ok(authority) = rewrite_authority_https(host_str) else {
+        tracing::error!("HOST from headers is not valid authority: {host_str}");
+        return bad_request();
+    };
 
-    if authority.is_err() {
-        tracing::error!("HOST from headers is not valid authority: {https_host}");
-        return Response::builder().status(400).body(Body::empty()).unwrap();
-    }
-
-    parts.authority = Some(authority.expect("to be valid authority"));
+    parts.authority = Some(authority);
 
     let Ok(destination) = Uri::from_parts(parts) else {
         tracing::error!("Url can not be reconstructed with HTTPS schema");
-        return Response::builder().status(400).body(Body::empty()).unwrap();
+        return bad_request();
     };
 
     Redirect::permanent(destination.to_string().as_str()).into_response()
@@ -157,10 +167,12 @@ async fn init_certificate_watch(
     let rt = Handle::current();
     let retry_tx = tx.clone();
 
-    let cert_path =
-        std::fs::canonicalize(&serve_config.cert).unwrap_or_else(|_| serve_config.cert.clone());
-    let key_path =
-        std::fs::canonicalize(&serve_config.key).unwrap_or_else(|_| serve_config.key.clone());
+    let cert_path = tokio::fs::canonicalize(&serve_config.cert)
+        .await
+        .unwrap_or_else(|_| serve_config.cert.clone());
+    let key_path = tokio::fs::canonicalize(&serve_config.key)
+        .await
+        .unwrap_or_else(|_| serve_config.key.clone());
 
     let watched_cert = cert_path.clone();
     let watched_key = key_path.clone();
@@ -170,6 +182,7 @@ async fn init_certificate_watch(
             Ok(event) => {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     let dominated = event.paths.iter().any(|p| {
+                        // Sync canonicalize is fine here: notify runs callbacks on its own thread
                         let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
                         canonical == watched_cert || canonical == watched_key
                     });
@@ -214,13 +227,48 @@ async fn init_certificate_watch(
                 tracing::error!("rustls reload error: {}", e);
                 tracing::info!("sleep {} milliseconds before retry", delay);
                 sleep(Duration::from_millis(delay)).await;
-                retry_tx
-                    .send(())
-                    .await
-                    .expect("to be able to send retry message");
+                if retry_tx.send(()).await.is_err() {
+                    tracing::warn!("certificate watcher channel closed, stopping retries");
+                    break;
+                }
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_authority_replaces_port_80() {
+        let result = rewrite_authority_https("example.com:80").unwrap();
+        assert_eq!(result.as_str(), "example.com:443");
+    }
+
+    #[test]
+    fn rewrite_authority_preserves_host_containing_80() {
+        let result = rewrite_authority_https("host80.example.com:80").unwrap();
+        assert_eq!(result.as_str(), "host80.example.com:443");
+    }
+
+    #[test]
+    fn rewrite_authority_preserves_ip_containing_80() {
+        let result = rewrite_authority_https("180.0.0.1:80").unwrap();
+        assert_eq!(result.as_str(), "180.0.0.1:443");
+    }
+
+    #[test]
+    fn rewrite_authority_no_port() {
+        let result = rewrite_authority_https("example.com").unwrap();
+        assert_eq!(result.as_str(), "example.com");
+    }
+
+    #[test]
+    fn rewrite_authority_non_80_port_unchanged() {
+        let result = rewrite_authority_https("example.com:8080").unwrap();
+        assert_eq!(result.as_str(), "example.com:8080");
+    }
 }
