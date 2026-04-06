@@ -13,8 +13,13 @@ use http_body_util::BodyExt;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use tokio_tungstenite::tungstenite::{
-    protocol::CloseFrame as TungsteniteCloseFrame, Message as TungsteniteMessage,
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    tungstenite::{
+        protocol::CloseFrame as TungsteniteCloseFrame, Error as TungsteniteError,
+        Message as TungsteniteMessage,
+    },
+    MaybeTlsStream, WebSocketStream,
 };
 
 #[allow(dead_code)] // used as serde default
@@ -97,11 +102,48 @@ async fn proxy_handler(
 }
 
 async fn handle_ws_proxy(req: Request, state: ProxyState, uri: Uri) -> Response {
+    let ws_uri = uri
+        .to_string()
+        .replacen("http://", "ws://", 1)
+        .replacen("https://", "wss://", 1);
+
+    // Connect to upstream BEFORE accepting the client upgrade.
+    // This way, if upstream rejects (e.g. 401), we can return the HTTP error
+    // to the client instead of upgrading and then dropping the connection.
+    let upstream_ws = match tokio_tungstenite::connect_async(&ws_uri).await {
+        Ok((stream, _)) => stream,
+        Err(TungsteniteError::Http(response)) => {
+            let status = response.status();
+            let body = response
+                .into_body()
+                .and_then(|b| String::from_utf8(b).ok())
+                .unwrap_or_default();
+            tracing::error!(
+                %status,
+                upstream = %ws_uri,
+                "Upstream rejected WebSocket upgrade"
+            );
+            return (
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                body,
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                upstream = %ws_uri,
+                "Failed to connect to upstream WebSocket"
+            );
+            return (StatusCode::BAD_GATEWAY, format!("Bad Gateway: {e}")).into_response();
+        }
+    };
+
     let (mut parts, _body) = req.into_parts();
     match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
         Ok(ws_upgrade) => {
             tracing::info!(upstream = %uri, "WebSocket upgrade accepted, starting relay");
-            ws_upgrade.on_upgrade(move |client_socket| ws_relay(client_socket, uri))
+            ws_upgrade.on_upgrade(move |client_socket| ws_relay(client_socket, upstream_ws))
         }
         Err(e) => {
             tracing::error!(
@@ -151,20 +193,7 @@ async fn handle_http_proxy(
     }
 }
 
-async fn ws_relay(client_ws: WebSocket, upstream_uri: Uri) {
-    let ws_uri = upstream_uri
-        .to_string()
-        .replacen("http://", "ws://", 1)
-        .replacen("https://", "wss://", 1);
-
-    let upstream_ws = match tokio_tungstenite::connect_async(&ws_uri).await {
-        Ok((stream, _)) => stream,
-        Err(e) => {
-            tracing::error!("Failed to connect to upstream WebSocket {}: {}", ws_uri, e);
-            return;
-        }
-    };
-
+async fn ws_relay(client_ws: WebSocket, upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>) {
     let (mut client_sink, mut client_stream) = client_ws.split();
     let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
 

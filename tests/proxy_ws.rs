@@ -1,6 +1,7 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -156,4 +157,40 @@ async fn test_websocket_upgrade_returns_101() {
     let (_, response) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
     assert_eq!(response.status(), 101);
+}
+
+#[tokio::test]
+async fn test_websocket_upstream_401_returned_to_client() {
+    // Start an upstream that rejects WebSocket upgrades with 401
+    async fn reject_handler() -> impl IntoResponse {
+        (StatusCode::UNAUTHORIZED, "Unauthorized")
+    }
+
+    let app = Router::new().route("/ws", get(reject_handler));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let proxy_addr = start_proxy(upstream_addr, "/api", true).await;
+
+    // Attempt WebSocket connection — should fail with the upstream's HTTP error,
+    // NOT succeed with 101 and then drop.
+    let url = format!("ws://{proxy_addr}/api/ws");
+    let result = tokio_tungstenite::connect_async(&url).await;
+
+    match result {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 401);
+        }
+        Ok(_) => panic!("Expected HTTP error, got successful WebSocket connection"),
+        Err(e) => panic!("Expected HTTP 401 error, got: {e}"),
+    }
 }
