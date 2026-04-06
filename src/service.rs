@@ -243,6 +243,10 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
     let current_exe = std::env::current_exe().map_err(|e| {
         ServeError::Service(format!("Could not determine current binary path: {e}"))
     })?;
+    let install_path = Path::new(BINARY_INSTALL_PATH);
+    if install_path.exists() {
+        std::fs::remove_file(install_path)?;
+    }
     std::fs::copy(&current_exe, BINARY_INSTALL_PATH)?;
     println!("Binary installed to {BINARY_INSTALL_PATH}");
 
