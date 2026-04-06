@@ -37,6 +37,15 @@ fn run_command_ok(cmd: &str, args: &[&str]) -> String {
     run_command(cmd, args).unwrap_or_default()
 }
 
+#[cfg(target_os = "linux")]
+fn run_command_stdout(cmd: &str, args: &[&str]) -> String {
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
 fn require_root() -> Result<(), ServeError> {
     let uid = run_command("id", &["-u"])?;
     if uid.trim() != "0" {
@@ -129,7 +138,16 @@ log_max_files = 7
 }
 
 #[cfg(target_os = "linux")]
-fn generate_systemd_unit(config_path: &Path) -> String {
+fn generate_systemd_unit(config_path: &Path, config: &ServeArgs) -> String {
+    let serve_path = config.get_path();
+    let working_dir = serve_path.display();
+
+    let mut read_write_paths = vec![serve_path.to_string_lossy().into_owned()];
+    if let Some(ref log_path) = config.log_path {
+        read_write_paths.push(log_path.to_string_lossy().into_owned());
+    }
+    let read_write = read_write_paths.join(" ");
+
     format!(
         r"[Unit]
 Description=Serve - Static File Server
@@ -140,7 +158,7 @@ Type=simple
 User={user}
 Group={user}
 ExecStart={binary} -c {config}
-WorkingDirectory=/var/www/serve
+WorkingDirectory={working_dir}
 Restart=on-failure
 RestartSec=5
 
@@ -150,7 +168,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ProtectSystem=strict
 ProtectHome=read-only
 NoNewPrivileges=false
-ReadWritePaths=/var/log/serve /var/www/serve
+ReadWritePaths={read_write}
 ReadOnlyPaths=/etc/letsencrypt
 
 [Install]
@@ -163,7 +181,13 @@ WantedBy=multi-user.target
 }
 
 #[cfg(target_os = "macos")]
-fn generate_launchd_plist(config_path: &Path) -> String {
+fn generate_launchd_plist(config_path: &Path, config: &ServeArgs) -> String {
+    let working_dir = config.get_path();
+    let log_dir = config
+        .log_path
+        .as_deref()
+        .unwrap_or_else(|| Path::new("/var/log/serve"));
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -179,21 +203,23 @@ fn generate_launchd_plist(config_path: &Path) -> String {
         <string>{config}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/var/www/serve</string>
+    <string>{working_dir}</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/serve/serve.stdout.log</string>
+    <string>{log_dir}/serve.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/serve/serve.stderr.log</string>
+    <string>{log_dir}/serve.stderr.log</string>
 </dict>
 </plist>
 "#,
         label = LAUNCHD_LABEL,
         binary = BINARY_INSTALL_PATH,
         config = config_path.display(),
+        working_dir = working_dir.display(),
+        log_dir = log_dir.display(),
     )
 }
 
@@ -235,7 +261,7 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
 
     // Validate config
     let content = std::fs::read_to_string(&config_path)?;
-    let _config: ServeArgs = toml::from_str(&content)
+    let config: ServeArgs = toml::from_str(&content)
         .map_err(|e| ServeError::Service(format!("Invalid config: {e}")))?;
     println!("Config validated: {}", config_path.display());
 
@@ -251,8 +277,11 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
     println!("Binary installed to {BINARY_INSTALL_PATH}");
 
     // Create directories
-    create_dir_if_needed("/var/log/serve")?;
-    create_dir_if_needed("/var/www/serve")?;
+    let serve_path = config.get_path();
+    create_dir_if_needed(&serve_path.to_string_lossy())?;
+    if let Some(ref log_path) = config.log_path {
+        create_dir_if_needed(&log_path.to_string_lossy())?;
+    }
 
     #[cfg(target_os = "linux")]
     {
@@ -269,17 +298,14 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         );
 
         // Set directory ownership
-        run_command_ok(
-            "chown",
-            &[&format!("{SERVICE_USER}:{SERVICE_USER}"), "/var/log/serve"],
-        );
-        run_command_ok(
-            "chown",
-            &[&format!("{SERVICE_USER}:{SERVICE_USER}"), "/var/www/serve"],
-        );
+        let ownership = format!("{SERVICE_USER}:{SERVICE_USER}");
+        run_command("chown", &[&ownership, &serve_path.to_string_lossy()])?;
+        if let Some(ref log_path) = config.log_path {
+            run_command("chown", &[&ownership, &log_path.to_string_lossy()])?;
+        }
 
         // Write systemd unit
-        let unit = generate_systemd_unit(&config_path);
+        let unit = generate_systemd_unit(&config_path, &config);
         std::fs::write(SYSTEMD_UNIT_PATH, unit)?;
         println!("Systemd unit installed to {SYSTEMD_UNIT_PATH}");
 
@@ -293,7 +319,7 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
     #[cfg(target_os = "macos")]
     {
         // Write launchd plist
-        let plist = generate_launchd_plist(&config_path);
+        let plist = generate_launchd_plist(&config_path, &config);
         std::fs::write(LAUNCHD_PLIST_PATH, plist)?;
         println!("Launchd plist installed to {LAUNCHD_PLIST_PATH}");
 
@@ -468,7 +494,7 @@ pub fn status() -> Result<(), ServeError> {
     // Get service status
     #[cfg(target_os = "linux")]
     {
-        let active = run_command_ok("systemctl", &["is-active", "serve.service"]);
+        let active = run_command_stdout("systemctl", &["is-active", "serve.service"]);
         println!(
             "Status: {}",
             if active.is_empty() {
@@ -477,6 +503,15 @@ pub fn status() -> Result<(), ServeError> {
                 &active
             }
         );
+        if active != "active" {
+            let logs = run_command_stdout(
+                "journalctl",
+                &["-u", "serve.service", "-n", "5", "--no-pager", "-o", "cat"],
+            );
+            if !logs.is_empty() {
+                println!("Recent logs:\n{logs}");
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
