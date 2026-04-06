@@ -1,15 +1,57 @@
 use std::{net::Ipv4Addr, path::PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use serde::{Deserialize, Serialize};
 
 use crate::{errors::ServeError, proxy::ProxyRoute, tls::Tls};
 
+#[derive(Args, Debug, Clone)]
+pub struct InitArgs {
+    /// Path where to create the config file. Defaults to platform-specific path.
+    #[clap(long)]
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct InstallArgs {
+    /// Path to the configuration file the service should use.
+    #[clap(long)]
+    pub config: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ValidateArgs {
+    /// Path to config file. If omitted, detects from the installed service.
+    #[clap(long)]
+    pub config: Option<PathBuf>,
+}
+
 #[derive(Subcommand, Debug, Serialize, Deserialize, Clone)]
 pub enum Subcommands {
     /// Adds TLS support
     Tls(Tls),
+    /// Create a default configuration file
+    #[serde(skip)]
+    Init(InitArgs),
+    /// Install serve as a system service
+    #[serde(skip)]
+    Install(InstallArgs),
+    /// Remove the serve system service
+    #[serde(skip)]
+    Uninstall,
+    /// Validate serve configuration
+    #[serde(skip)]
+    Validate(ValidateArgs),
+    /// Restart the system service (e.g. after binary update)
+    #[serde(skip)]
+    Restart,
+    /// Reload the service configuration
+    #[serde(skip)]
+    Reload,
+    /// Show service status, version, and config path
+    #[serde(skip)]
+    Status,
 }
 
 const CONFIG_HELP: &str = r#"Path to the configuration file.
@@ -164,7 +206,7 @@ impl ServeArgs {
                 key: tls.key.canonicalize().unwrap_or(tls.key.clone()),
                 redirect_http: tls.redirect_http,
             })),
-            None => None,
+            _ => None,
         };
 
         let toml = format!(

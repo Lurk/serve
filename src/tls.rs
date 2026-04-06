@@ -18,12 +18,12 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
-use rustls::ServerConfig;
-use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use clap::Args;
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
 };
+use rustls::ServerConfig;
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
@@ -31,7 +31,10 @@ use tracing::Level;
 
 use crate::errors;
 
-fn build_server_config(cert_path: &PathBuf, key_path: &PathBuf) -> Result<Arc<ServerConfig>, errors::ServeError> {
+fn build_server_config(
+    cert_path: &PathBuf,
+    key_path: &PathBuf,
+) -> Result<Arc<ServerConfig>, errors::ServeError> {
     let cert_pem = std::fs::read(cert_path)?;
     let key_pem = std::fs::read(key_path)?;
 

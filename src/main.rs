@@ -1,6 +1,7 @@
 mod config;
 mod errors;
 mod proxy;
+mod service;
 mod tls;
 
 use axum::{http::StatusCode, Router};
@@ -34,7 +35,21 @@ async fn main() {
 }
 
 async fn run() -> Result<(), errors::ServeError> {
-    let args = ServeArgs::parse().resolve_config()?;
+    let args = ServeArgs::parse();
+
+    // Handle management subcommands before server setup
+    match &args.subcommand {
+        Some(Subcommands::Init(init_args)) => return service::init(init_args),
+        Some(Subcommands::Install(install_args)) => return service::install(install_args),
+        Some(Subcommands::Uninstall) => return service::uninstall(),
+        Some(Subcommands::Validate(validate_args)) => return service::validate(validate_args),
+        Some(Subcommands::Restart) => return service::restart(),
+        Some(Subcommands::Reload) => return service::reload(),
+        Some(Subcommands::Status) => return service::status(),
+        _ => {}
+    }
+
+    let args = args.resolve_config()?;
     let addr = SocketAddr::from((args.addr, args.port));
 
     let _guard: Option<WorkerGuard> =
@@ -89,20 +104,16 @@ async fn run() -> Result<(), errors::ServeError> {
             serve_dir.not_found_service(ServeFile::new(path))
         };
         match compression {
-            Some(layer) => app.fallback_service(
-                Router::new()
-                    .fallback_service(serve_dir)
-                    .layer(layer),
-            ),
+            Some(layer) => {
+                app.fallback_service(Router::new().fallback_service(serve_dir).layer(layer))
+            }
             None => app.fallback_service(serve_dir),
         }
     } else {
         match compression {
-            Some(layer) => app.fallback_service(
-                Router::new()
-                    .fallback_service(serve_dir)
-                    .layer(layer),
-            ),
+            Some(layer) => {
+                app.fallback_service(Router::new().fallback_service(serve_dir).layer(layer))
+            }
             None => app.fallback_service(serve_dir),
         }
     };
@@ -126,6 +137,7 @@ async fn run() -> Result<(), errors::ServeError> {
             tracing::info!("listening on {}", addr);
             axum_server::bind(addr).serve(service).await?;
         }
+        _ => unreachable!("management subcommands handled above"),
     };
     Ok(())
 }

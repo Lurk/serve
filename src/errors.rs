@@ -23,6 +23,10 @@ pub enum ServeError {
     GenerateConfig(String),
     #[error("Proxy error: {0}")]
     Proxy(String),
+    #[error("Service error: {0}")]
+    Service(String),
+    #[error("Command failed: {command}\n{stderr}")]
+    CommandFailed { command: String, stderr: String },
 }
 
 impl From<std::ffi::OsString> for ServeError {

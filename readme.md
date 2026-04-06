@@ -48,8 +48,15 @@ serve [OPTIONS] [COMMAND]
 ## Commands
 
 ```
-  tls   Adds TLS support
-  help  Print this message or the help of the given subcommand(s)
+  tls        Adds TLS support
+  init       Create a default configuration file
+  install    Install serve as a system service
+  uninstall  Remove the serve system service
+  validate   Validate serve configuration
+  restart    Restart the system service (e.g. after binary update)
+  reload     Reload the service configuration
+  status     Show service status, version, and config path
+  help       Print this message or the help of the given subcommand(s)
 ```
 
 ### tls
@@ -114,54 +121,75 @@ redirect_http = true
 
 
 
-## Running as a Linux systemd service
+## Service Management
 
-### Install
+Serve can install itself as a system service on Linux (systemd) and macOS (launchd).
 
-```shell
-sudo ./install.sh install
-```
-
-To use a pre-built binary instead of building with cargo:
+### Create a config file
 
 ```shell
-sudo ./install.sh install --binary /path/to/serve
+serve init
 ```
 
-### Configure
-
-Edit the config file at `/etc/serve/serve.toml`:
+Creates a default config at the platform-specific path (`/etc/serve/serve.toml` on Linux, `/Library/Application Support/serve/serve.toml` on macOS). To specify a custom path:
 
 ```shell
-sudo nano /etc/serve/serve.toml
+serve init --path /path/to/serve.toml
 ```
 
-Then restart the service:
+### Install as a service
 
 ```shell
-sudo systemctl restart serve.service
+sudo serve install --config /etc/serve/serve.toml
 ```
 
-### Firewall
+This validates the config, copies the binary to `/usr/local/bin/serve`, creates log and data directories, and registers the system service. On Linux it also creates a dedicated `serve` user.
 
-If binding to ports 443/80, ensure they are open in both the OS firewall and any cloud firewall (e.g., Hetzner Cloud Firewall). The install script configures `ufw` automatically if it is active, but cloud firewalls must be configured manually.
-
-### Manage
+### Validate configuration
 
 ```shell
-sudo systemctl start serve.service
-sudo systemctl stop serve.service
-sudo systemctl status serve.service
-journalctl -u serve.service -f
+serve validate
 ```
+
+Auto-detects the config path from the installed service. To validate a specific file:
+
+```shell
+serve validate --config /path/to/serve.toml
+```
+
+### Restart (after binary update)
+
+```shell
+sudo serve restart
+```
+
+### Reload (after config change)
+
+```shell
+sudo serve reload
+```
+
+Validates the config before restarting. Aborts if the config is invalid.
+
+### Check status
+
+```shell
+serve status
+```
+
+Shows running status, installed version, and config path.
 
 ### Uninstall
 
 ```shell
-sudo ./install.sh uninstall
+sudo serve uninstall
 ```
 
-This removes the binary, systemd unit, and service user. Config, log, and content directories are preserved — remove them manually if desired.
+Removes the binary, service definition, and service user. Config, log, and data directories are preserved.
+
+### Firewall
+
+If binding to ports 443/80, ensure they are open in both the OS firewall and any cloud firewall (e.g., Hetzner Cloud Firewall).
 
 ## Generate self signed certificate for localhost
 

@@ -137,16 +137,10 @@ async fn test_regular_http_through_proxy() {
     let upstream_addr = start_upstream().await;
     let proxy_addr = start_proxy(upstream_addr, "/api", true).await;
 
-    let client: Client<_, axum::body::Body> =
-        Client::builder(TokioExecutor::new()).build_http();
+    let client: Client<_, axum::body::Body> = Client::builder(TokioExecutor::new()).build_http();
 
-    let uri: hyper::Uri = format!("http://{}/api/health", proxy_addr)
-        .parse()
-        .unwrap();
-    let resp = client
-        .get(uri)
-        .await
-        .unwrap();
+    let uri: hyper::Uri = format!("http://{}/api/health", proxy_addr).parse().unwrap();
+    let resp = client.get(uri).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.into_body().collect().await.unwrap().to_bytes();

@@ -193,12 +193,12 @@ fn axum_msg_to_tungstenite(msg: AxumMessage) -> TungsteniteMessage {
         AxumMessage::Binary(data) => TungsteniteMessage::Binary(data),
         AxumMessage::Ping(data) => TungsteniteMessage::Ping(data),
         AxumMessage::Pong(data) => TungsteniteMessage::Pong(data),
-        AxumMessage::Close(frame) => TungsteniteMessage::Close(frame.map(|f| {
-            TungsteniteCloseFrame {
+        AxumMessage::Close(frame) => {
+            TungsteniteMessage::Close(frame.map(|f| TungsteniteCloseFrame {
                 code: f.code.into(),
                 reason: f.reason.as_str().to_owned().into(),
-            }
-        })),
+            }))
+        }
     }
 }
 
