@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>serve · stats · first-time setup</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+           max-width: 480px; margin: 6em auto; padding: 1.5em;
+           background: #fafafa; color: #222; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #ddd; }
+      input { background: #2a2a2a; color: #fff; border-color: #444; }
+      .note { color: #999; }
+    }
+    h1 { font-size: 1.2em; margin-top: 0; }
+    label { display: block; margin-top: 0.8em; font-size: 0.9em; }
+    input { width: 100%; padding: 0.5em; font: inherit;
+            border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    button { margin-top: 1.2em; padding: 0.5em 1em; font: inherit;
+             border: 1px solid #444; background: #444; color: #fff;
+             border-radius: 4px; cursor: pointer; }
+    .err { color: #c33; margin: 0.6em 0; }
+    .note { font-size: 0.85em; color: #666; margin-top: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>serve · stats · first-time setup</h1>
+  <p>No password is set yet. Check the server log for the one-time setup token, then choose a password.</p>
+  <!--ERROR-->
+  <form method="post" action="{{PREFIX}}/setup">
+    <input type="hidden" name="csrf" value="{{CSRF}}">
+    <label>Setup token<input name="setup_token" autocomplete="off" required></label>
+    <label>New password<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+    <label>Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="12" required></label>
+    <button type="submit">Create</button>
+  </form>
+  <p class="note">Store the password somewhere safe — the only recovery is deleting
+    <code>stats_auth</code> from the SQLite database file and restarting.</p>
+</body>
+</html>

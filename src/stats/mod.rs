@@ -5,10 +5,13 @@ pub mod clock;
 pub mod config;
 pub mod recorder;
 pub mod rollup;
+pub mod routes;
 pub mod store;
+pub mod templates;
 pub mod writer;
 
 pub use clock::{Clock, SystemClock};
 pub use config::{DEFAULT_URL_PREFIX, StatsConfig};
 pub use recorder::{RecorderHandle, StatsRecorderLayer};
+pub use routes::StatsState;
 pub use writer::WriterHandle;

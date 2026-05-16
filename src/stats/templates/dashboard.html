@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>serve · stats</title>
+  <style>
+    :root {
+      --bg: #fafafa; --fg: #222; --muted: #666; --border: #ddd;
+      --c2: #38a169; --c3: #3182ce; --c4: #d69e2e; --c5: #e53e3e;
+      --warn-bg: #fff3cd; --warn-fg: #664d03;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #1a1a1a; --fg: #ddd; --muted: #888; --border: #333;
+              --warn-bg: #3a2f00; --warn-fg: #ffd96b; }
+    }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+           background: var(--bg); color: var(--fg); margin: 0; padding: 1em 1.5em; }
+    header { display: flex; justify-content: space-between; align-items: center;
+             border-bottom: 1px solid var(--border); padding-bottom: 0.5em; }
+    header h1 { font-size: 1.1em; margin: 0; }
+    .windows { margin: 1em 0; }
+    .windows button { padding: 0.4em 0.8em; font: inherit; margin-right: 0.4em;
+                      border: 1px solid var(--border); background: transparent;
+                      color: inherit; cursor: pointer; border-radius: 4px; }
+    .windows button.active { background: var(--fg); color: var(--bg); }
+    .cards { display: flex; gap: 1em; margin: 1em 0; flex-wrap: wrap; }
+    .card { flex: 1 1 140px; padding: 0.8em 1em; border: 1px solid var(--border);
+            border-radius: 6px; min-width: 130px; }
+    .card .label { font-size: 0.8em; color: var(--muted); }
+    .card .value { font-size: 1.4em; font-weight: 600; margin-top: 0.2em; }
+    .panel { margin: 1.5em 0; }
+    .panel h2 { font-size: 1em; margin: 0 0 0.5em 0; color: var(--muted); }
+    canvas { width: 100%; height: 220px; display: block;
+             border: 1px solid var(--border); border-radius: 6px; }
+    .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted); }
+    .legend .sw { display: inline-block; width: 0.8em; height: 0.8em;
+                  margin-right: 0.2em; vertical-align: middle; }
+    .sw.c2 { background: var(--c2); } .sw.c3 { background: var(--c3); }
+    .sw.c4 { background: var(--c4); } .sw.c5 { background: var(--c5); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    th, td { padding: 0.4em 0.6em; text-align: left;
+             border-bottom: 1px solid var(--border); }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .sort-controls { float: right; }
+    .warn { background: var(--warn-bg); color: var(--warn-fg);
+            padding: 0.5em 0.8em; border-radius: 4px; margin: 0.5em 0;
+            font-size: 0.9em; }
+    footer { margin-top: 2em; padding-top: 1em; border-top: 1px solid var(--border);
+             font-size: 0.85em; color: var(--muted); }
+    .logout { background: none; border: 1px solid var(--border); padding: 0.3em 0.8em;
+              border-radius: 4px; color: inherit; cursor: pointer; font: inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>serve · stats</h1>
+    <form method="post" action="{{PREFIX}}/logout"
+          style="margin:0"><button class="logout">logout</button></form>
+  </header>
+
+  <div class="windows" id="windows">
+    <button data-window="1d">1 day</button>
+    <button data-window="7d">7 days</button>
+    <button data-window="30d">30 days</button>
+    <button data-window="12m">12 months</button>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <h2>Requests over time</h2>
+    <canvas id="chart-req"></canvas>
+    <div class="legend">
+      <span><span class="sw c2"></span>2xx</span>
+      <span><span class="sw c3"></span>3xx</span>
+      <span><span class="sw c4"></span>4xx</span>
+      <span><span class="sw c5"></span>5xx</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Bytes delivered</h2>
+    <canvas id="chart-bytes"></canvas>
+    <div class="legend">
+      <span><span class="sw c2"></span>2xx</span>
+      <span><span class="sw c3"></span>3xx</span>
+      <span><span class="sw c4"></span>4xx</span>
+      <span><span class="sw c5"></span>5xx</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Top 30 assets
+      <span class="sort-controls">
+        Sort by:
+        <button data-sort="bytes">bytes</button>
+        <button data-sort="requests">requests</button>
+      </span>
+    </h2>
+    <table id="assets"><thead><tr>
+      <th>#</th><th>Path</th><th class="num">Requests</th><th class="num">Bytes</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <footer id="health"></footer>
+
+  <script>
+  const PREFIX = '{{PREFIX}}';
+  const fmt = {
+    bytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+      return (n / 1073741824).toFixed(2) + ' GB';
+    },
+    int(n) { return n.toLocaleString(); }
+  };
+
+  const state = {
+    window: localStorage.getItem('stats:window') || '1d',
+    sort: localStorage.getItem('stats:sort') || 'bytes',
+  };
+
+  function setActive(group, attr, value) {
+    group.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('active', b.dataset[attr] === value);
+    });
+  }
+
+  async function load() {
+    setActive(document.getElementById('windows'), 'window', state.window);
+    setActive(document.querySelector('.sort-controls'), 'sort', state.sort);
+    const [summary, ts, assets, health] = await Promise.all([
+      fetch(`${PREFIX}/api/summary?window=${state.window}`).then(r => r.json()),
+      fetch(`${PREFIX}/api/timeseries?window=${state.window}`).then(r => r.json()),
+      fetch(`${PREFIX}/api/assets?window=${state.window}&sort=${state.sort}`).then(r => r.json()),
+      fetch(`${PREFIX}/api/health`).then(r => r.json()),
+    ]);
+    renderCards(summary);
+    drawRequestsChart(ts);
+    drawBytesChart(ts);
+    renderAssets(assets);
+    renderHealth(health);
+  }
+
+  function renderCards(s) {
+    const total = s.by_class.reduce((a, c) => a + c.requests, 0);
+    const c4 = (s.by_class.find(c => c.class === 4) || { requests: 0 }).requests;
+    const c5 = (s.by_class.find(c => c.class === 5) || { requests: 0 }).requests;
+    const c2 = (s.by_class.find(c => c.class === 2) || { requests: 0 }).requests;
+    const c3 = (s.by_class.find(c => c.class === 3) || { requests: 0 }).requests;
+    document.getElementById('cards').innerHTML = `
+      <div class="card"><div class="label">Requests</div><div class="value">${fmt.int(total)}</div></div>
+      <div class="card"><div class="label">Bytes out</div><div class="value">${fmt.bytes(s.bytes_total)}</div></div>
+      <div class="card"><div class="label">2xx</div><div class="value">${fmt.int(c2)}</div></div>
+      <div class="card"><div class="label">3xx</div><div class="value">${fmt.int(c3)}</div></div>
+      <div class="card"><div class="label">4xx / 5xx</div><div class="value">${fmt.int(c4)} / ${fmt.int(c5)}</div></div>
+    `;
+  }
+
+  function drawRequestsChart(ts) {
+    const canvas = document.getElementById('chart-req');
+    drawStackedAreaChart(canvas, ts.points, ['c2', 'c3', 'c4', 'c5'], 'requests');
+  }
+  function drawBytesChart(ts) {
+    const canvas = document.getElementById('chart-bytes');
+    drawStackedAreaChart(canvas, ts.points, ['c2', 'c3', 'c4', 'c5'], 'bytes');
+  }
+
+  function drawStackedAreaChart(canvas, points, series, metric) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr;
+    canvas.height = canvas.clientHeight * dpr;
+    ctx.scale(dpr, dpr);
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    ctx.clearRect(0, 0, W, H);
+    if (!points.length) return;
+    const colors = { c2: '#38a169', c3: '#3182ce', c4: '#d69e2e', c5: '#e53e3e' };
+    const valueOf = (p, classDigit) => {
+      const m = p.by_class[classDigit];
+      return (m && m[metric]) || 0;
+    };
+    const totals = points.map(p => series.reduce(
+      (s, k) => s + valueOf(p, parseInt(k[1])), 0));
+    const max = Math.max(1, ...totals);
+    const xStep = (W - 40) / Math.max(1, points.length - 1);
+    series.forEach((k, si) => {
+      ctx.fillStyle = colors[k];
+      ctx.beginPath();
+      ctx.moveTo(30, H - 20);
+      points.forEach((p, i) => {
+        let stack = 0;
+        for (let j = 0; j <= si; j++) {
+          stack += valueOf(p, parseInt(series[j][1]));
+        }
+        const x = 30 + xStep * i;
+        const y = H - 20 - (stack / max) * (H - 30);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      for (let i = points.length - 1; i >= 0; i--) {
+        let stack = 0;
+        for (let j = 0; j < si; j++) {
+          stack += valueOf(points[i], parseInt(series[j][1]));
+        }
+        const x = 30 + xStep * i;
+        const y = H - 20 - (stack / max) * (H - 30);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    });
+    drawAxes(ctx, W, H, metric === 'bytes' ? fmt.bytes(max) : fmt.int(max));
+  }
+
+  function drawAxes(ctx, W, H, maxLabel) {
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(30, 5);
+    ctx.lineTo(30, H - 20);
+    ctx.lineTo(W - 5, H - 20);
+    ctx.stroke();
+    ctx.fillStyle = '#888';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(String(maxLabel), 2, 12);
+    ctx.fillText('0', 12, H - 22);
+  }
+
+  function renderAssets(a) {
+    const tbody = document.querySelector('#assets tbody');
+    tbody.innerHTML = a.rows.map((r, i) => `
+      <tr><td>${i + 1}</td><td>${escapeHtml(r.path)}</td>
+          <td class="num">${fmt.int(r.requests)}</td>
+          <td class="num">${fmt.bytes(r.bytes)}</td></tr>
+    `).join('');
+  }
+
+  function renderHealth(h) {
+    const ago = (v, unit, suf) => v == null ? 'never' : `${(v / unit) | 0}${suf} ago`;
+    const parts = [];
+    parts.push(`<div>Last flush: ${ago(h.last_flush_seconds_ago, 1, 's')} ·
+       Last hour rollup: ${ago(h.last_hour_rollup_seconds_ago, 60, 'm')} ·
+       Last day rollup: ${ago(h.last_day_rollup_seconds_ago, 3600, 'h')}</div>`);
+    if (h.dropped_events_since_startup > 0)
+      parts.push(`<div class="warn">⚠ ${fmt.int(h.dropped_events_since_startup)} events dropped since startup</div>`);
+    if (h.sqlite_write_failures_since_startup > 0)
+      parts.push(`<div class="warn">⚠ ${fmt.int(h.sqlite_write_failures_since_startup)} SQLite write failures since startup</div>`);
+    if (h.failed_logins_since_startup > 0) {
+      const recent = h.last_failed_login_seconds_ago !== null
+        ? ` (most recent: ${(h.last_failed_login_seconds_ago / 60 | 0)}m ago)` : '';
+      parts.push(`<div class="warn">⚠ ${fmt.int(h.failed_logins_since_startup)} failed login attempts since startup${recent}</div>`);
+    }
+    document.getElementById('health').innerHTML = parts.join('');
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  }
+
+  document.getElementById('windows').addEventListener('click', e => {
+    if (e.target.dataset.window) {
+      state.window = e.target.dataset.window;
+      localStorage.setItem('stats:window', state.window);
+      load();
+    }
+  });
+  document.querySelector('.sort-controls').addEventListener('click', e => {
+    if (e.target.dataset.sort) {
+      state.sort = e.target.dataset.sort;
+      localStorage.setItem('stats:sort', state.sort);
+      load();
+    }
+  });
+  window.addEventListener('load', load);
+  </script>
+</body>
+</html>
