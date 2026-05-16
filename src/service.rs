@@ -146,6 +146,13 @@ fn generate_systemd_unit(config_path: &Path, config: &ServeArgs) -> String {
     if let Some(ref log_path) = config.log_path {
         read_write_paths.push(log_path.to_string_lossy().into_owned());
     }
+    if let Some(stats) = config.stats.as_ref() {
+        if let Some(parent) = stats.db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                read_write_paths.push(parent.to_string_lossy().into_owned());
+            }
+        }
+    }
     let read_write = read_write_paths.join(" ");
 
     format!(
@@ -259,13 +266,11 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
         ServeError::Service(format!("Config file not found: {}", args.config.display()))
     })?;
 
-    // Validate config
     let content = std::fs::read_to_string(&config_path)?;
     let config: ServeArgs = toml::from_str(&content)
         .map_err(|e| ServeError::Service(format!("Invalid config: {e}")))?;
     println!("Config validated: {}", config_path.display());
 
-    // Copy binary
     let current_exe = std::env::current_exe().map_err(|e| {
         ServeError::Service(format!("Could not determine current binary path: {e}"))
     })?;
@@ -276,16 +281,23 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
     std::fs::copy(&current_exe, BINARY_INSTALL_PATH)?;
     println!("Binary installed to {BINARY_INSTALL_PATH}");
 
-    // Create directories
     let serve_path = config.get_path();
     create_dir_if_needed(&serve_path.to_string_lossy())?;
     if let Some(ref log_path) = config.log_path {
         create_dir_if_needed(&log_path.to_string_lossy())?;
     }
+    let stats_db_parent = config
+        .stats
+        .as_ref()
+        .and_then(|s| s.db_path.parent())
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    if let Some(ref parent) = stats_db_parent {
+        create_dir_if_needed(&parent.to_string_lossy())?;
+    }
 
     #[cfg(target_os = "linux")]
     {
-        // Create service user (ignore error if already exists)
         run_command_ok(
             "useradd",
             &[
@@ -297,19 +309,19 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
             ],
         );
 
-        // Set directory ownership
         let ownership = format!("{SERVICE_USER}:{SERVICE_USER}");
         run_command("chown", &[&ownership, &serve_path.to_string_lossy()])?;
         if let Some(ref log_path) = config.log_path {
             run_command("chown", &[&ownership, &log_path.to_string_lossy()])?;
         }
+        if let Some(ref parent) = stats_db_parent {
+            run_command("chown", &[&ownership, &parent.to_string_lossy()])?;
+        }
 
-        // Write systemd unit
         let unit = generate_systemd_unit(&config_path, &config);
         std::fs::write(SYSTEMD_UNIT_PATH, unit)?;
         println!("Systemd unit installed to {SYSTEMD_UNIT_PATH}");
 
-        // Enable and start
         run_command("systemctl", &["daemon-reload"])?;
         run_command("systemctl", &["enable", "serve.service"])?;
         run_command("systemctl", &["start", "serve.service"])?;
@@ -318,12 +330,10 @@ pub fn install(args: &InstallArgs) -> Result<(), ServeError> {
 
     #[cfg(target_os = "macos")]
     {
-        // Write launchd plist
         let plist = generate_launchd_plist(&config_path, &config);
         std::fs::write(LAUNCHD_PLIST_PATH, plist)?;
         println!("Launchd plist installed to {LAUNCHD_PLIST_PATH}");
 
-        // Bootstrap (try modern API first, fall back to legacy)
         if run_command("launchctl", &["bootstrap", "system", LAUNCHD_PLIST_PATH]).is_err() {
             run_command("launchctl", &["load", "-w", LAUNCHD_PLIST_PATH])?;
         }
@@ -424,6 +434,31 @@ pub fn validate(args: &ValidateArgs) -> Result<(), ServeError> {
         }
     }
 
+    if let Some(stats) = &config.stats {
+        let parent = stats.db_path.parent().ok_or_else(|| {
+            ServeError::Stats(format!(
+                "stats.db_path has no parent: {}",
+                stats.db_path.display()
+            ))
+        })?;
+        if !parent.exists() {
+            return Err(ServeError::Stats(format!(
+                "stats.db_path parent does not exist: {}",
+                parent.display()
+            )));
+        }
+        let probe = parent.join(".serve-validate-probe");
+        std::fs::write(&probe, b"")
+            .and_then(|()| std::fs::remove_file(&probe))
+            .map_err(|e| {
+                ServeError::Stats(format!(
+                    "stats.db_path parent not writable ({}): {e}",
+                    parent.display()
+                ))
+            })?;
+        println!("stats: db_path parent OK ({})", parent.display());
+    }
+
     Ok(())
 }
 
@@ -450,7 +485,6 @@ pub fn restart() -> Result<(), ServeError> {
 pub fn reload() -> Result<(), ServeError> {
     require_root()?;
 
-    // Validate config before restarting
     let config_path = discover_config_path()?;
     println!("Validating config: {}", config_path.display());
 
@@ -477,7 +511,6 @@ pub fn reload() -> Result<(), ServeError> {
 
 #[allow(clippy::unnecessary_wraps)]
 pub fn status() -> Result<(), ServeError> {
-    // Get installed binary version
     let version = if Path::new(BINARY_INSTALL_PATH).exists() {
         run_command(BINARY_INSTALL_PATH, &["--version"]).unwrap_or_else(|_| "unknown".to_string())
     } else {
@@ -485,13 +518,11 @@ pub fn status() -> Result<(), ServeError> {
     };
     println!("Version: {version}");
 
-    // Get config path
     match discover_config_path() {
         Ok(config_path) => println!("Config: {}", config_path.display()),
         Err(_) => println!("Config: not found (service not installed)"),
     }
 
-    // Get service status
     #[cfg(target_os = "linux")]
     {
         let active = run_command_stdout("systemctl", &["is-active", "serve.service"]);

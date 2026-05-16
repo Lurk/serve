@@ -91,6 +91,65 @@ To disable prefix stripping, use the config file with `strip_prefix = false`.
 The proxy sets `x-forwarded-for` and `x-forwarded-proto` headers on forwarded requests.
 HTTPS upstreams are not supported.
 
+## Stats (optional)
+
+`serve` ships with an opt-in HTTP analytics subsystem that records request
+counts and bytes served, broken down by URL path and HTTP status class. A
+small password-gated HTML dashboard lives at `/__stats__`.
+
+Stats are **off by default**. To enable, add a `[stats]` table to your
+`serve.toml`:
+
+```toml
+[stats]
+db_path = "/var/lib/serve/stats.db"   # SQLite file; parent dir must be writable
+session_ttl_days = 30                  # default
+# secure_cookies = true                # force the Secure attribute on auth cookies.
+                                       # Omit to follow the TLS subcommand; set to
+                                       # true when TLS terminates upstream (proxy).
+# url_prefix = "/admin/stats"          # default: "/__stats__". Must start with /,
+                                       # must not end with /, and must not contain
+                                       # "//" or "..".
+```
+
+On the very first start with `[stats]` configured, `serve` prints a setup
+token to **stderr** only — the token is intentionally never written through
+`tracing` so `--log-path` won't persist it to a log file on disk:
+
+```
+stats setup token: 8f4c…
+```
+
+Visit `https://your-host/__stats__/` in a browser. You will be redirected to
+`/__stats__/setup`, where you enter the token plus a password of your choice.
+The password is hashed with argon2id and stored in the SQLite file; the token
+is consumed and cannot be reused.
+
+After setup, log in at `/__stats__/login` to see:
+
+- Time-series of requests/bytes broken down by 2xx/3xx/4xx/5xx
+- Top 30 paths (toggle by requests or bytes)
+- Windows: 1 day, 7 days, 30 days, 12 months
+
+### Retention
+
+Minute buckets are kept for 25 hours, hourly buckets for 32 days, daily
+buckets for 400 days. Older rows are pruned automatically.
+
+### Resetting the password
+
+Stop `serve`, delete the SQLite file at `db_path`, and restart. A new setup
+token will be printed.
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| `/__stats__` returns 404 | `[stats]` not in config; section missing. |
+| Setup form keeps rejecting token | Token only printed on first start with empty DB. Delete DB to regenerate. |
+| Dashboard shows zero traffic | Writer flushes every 10s; very recent requests may not yet be visible. |
+| `serve` refuses to start with "stats db_path parent missing" | Create the parent directory or fix the path. |
+
 ## Config file:
 
 

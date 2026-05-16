@@ -56,8 +56,6 @@ async fn run() -> Result<(), errors::ServeError> {
     let _guard: Option<WorkerGuard> =
         init_logging(args.log_path.as_ref(), args.log_max_files, args.log_level)?;
 
-    let has_proxy = !args.proxy.is_empty();
-
     for route in &args.proxy {
         if route.upstream.starts_with("https://") {
             return Err(errors::ServeError::Proxy(
@@ -66,9 +64,50 @@ async fn run() -> Result<(), errors::ServeError> {
         }
     }
 
+    let tls_enabled = matches!(args.subcommand, Some(Subcommands::Tls(_)));
+    let stats_handle = if let Some(stats_cfg) = args.stats.as_ref() {
+        Some(stats::StatsHandle::start(stats_cfg, tls_enabled).await?)
+    } else {
+        None
+    };
+
+    let (stats_router, recorder_layer) = stats_handle.as_ref().map_or_else(
+        || (None, None),
+        |h| (Some(h.router.clone()), Some(h.recorder_layer())),
+    );
+
+    let app = build_app(&args, stats_router, recorder_layer);
+
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    match args.subcommand {
+        Some(Subcommands::Tls(tls)) => start_tls_server(service, addr, tls).await?,
+        None => {
+            tracing::info!("listening on {}", addr);
+            axum_server::bind(addr).serve(service).await?;
+        }
+        _ => unreachable!("management subcommands handled above"),
+    }
+
+    if let Some(h) = stats_handle {
+        h.shutdown().await;
+    }
+    Ok(())
+}
+
+fn build_app(
+    args: &config::ServeArgs,
+    stats_router: Option<Router>,
+    recorder: Option<stats::StatsRecorderLayer>,
+) -> Router {
+    let has_proxy = !args.proxy.is_empty();
     let serve_dir = ServeDir::new(args.get_path());
 
     let mut app = Router::new();
+
+    if let Some(sr) = stats_router {
+        app = app.merge(sr);
+    }
 
     if has_proxy {
         let client = build_client();
@@ -110,12 +149,16 @@ async fn run() -> Result<(), errors::ServeError> {
         Router::new().fallback_service(serve_dir)
     };
 
-    let app = match compression {
+    let mut app = match compression {
         Some(layer) => app.fallback_service(file_service.layer(layer)),
         None => app.fallback_service(file_service),
     };
 
-    let app = app.layer(
+    if let Some(layer) = recorder {
+        app = app.layer(layer);
+    }
+
+    app.layer(
         TraceLayer::new_for_http()
             .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
             .on_response(
@@ -124,19 +167,7 @@ async fn run() -> Result<(), errors::ServeError> {
                     .latency_unit(tower_http::LatencyUnit::Micros)
                     .include_headers(true),
             ),
-    );
-
-    let service = app.into_make_service_with_connect_info::<SocketAddr>();
-
-    match args.subcommand {
-        Some(Subcommands::Tls(tls)) => start_tls_server(service, addr, tls).await?,
-        None => {
-            tracing::info!("listening on {}", addr);
-            axum_server::bind(addr).serve(service).await?;
-        }
-        _ => unreachable!("management subcommands handled above"),
-    }
-    Ok(())
+    )
 }
 
 fn init_logging(
