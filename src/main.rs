@@ -4,7 +4,7 @@ mod proxy;
 mod service;
 mod tls;
 
-use axum::{http::StatusCode, Router};
+use axum::{Router, http::StatusCode};
 use clap::Parser;
 use clap_verbosity_flag::Verbosity;
 use std::{net::SocketAddr, path::PathBuf};
@@ -22,7 +22,7 @@ use tracing_appender::{
 
 use crate::{
     config::{ServeArgs, Subcommands},
-    proxy::{build_client, proxy_router, ProxyState},
+    proxy::{ProxyState, build_client, proxy_router},
     tls::start_tls_server,
 };
 
