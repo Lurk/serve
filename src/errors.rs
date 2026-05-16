@@ -1,7 +1,6 @@
 use thiserror::Error;
 use tracing_appender::rolling::InitError;
 
-#[allow(dead_code)] // variants constructed in platform-specific code and stats subsystem
 #[derive(Error, Debug)]
 pub enum ServeError {
     #[error("Notify errors {0}")]

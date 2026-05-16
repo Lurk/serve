@@ -2,6 +2,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod store;
 
 pub use clock::{Clock, SystemClock};
 pub use config::{DEFAULT_URL_PREFIX, StatsConfig};
