@@ -1,7 +1,7 @@
 use thiserror::Error;
 use tracing_appender::rolling::InitError;
 
-#[allow(dead_code)] // variants constructed in platform-specific code
+#[allow(dead_code)] // variants constructed in platform-specific code and stats subsystem
 #[derive(Error, Debug)]
 pub enum ServeError {
     #[error("Notify errors {0}")]
@@ -28,6 +28,12 @@ pub enum ServeError {
     Service(String),
     #[error("Command failed: {command}\n{stderr}")]
     CommandFailed { command: String, stderr: String },
+    #[error("Stats error: {0}")]
+    Stats(String),
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("SQLite pool error: {0}")]
+    SqlitePool(#[from] r2d2::Error),
 }
 
 impl From<std::ffi::OsString> for ServeError {

@@ -2,6 +2,7 @@ mod config;
 mod errors;
 mod proxy;
 mod service;
+mod stats;
 mod tls;
 
 use axum::{Router, http::StatusCode};
