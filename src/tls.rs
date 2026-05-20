@@ -7,15 +7,15 @@ use std::{
 };
 
 use axum::{
+    Router,
     body::Body,
-    extract::{connect_info::IntoMakeServiceWithConnectInfo, Request},
+    extract::{Request, connect_info::IntoMakeServiceWithConnectInfo},
     http::{
+        Uri,
         header::HOST,
         uri::{Authority, InvalidUri},
-        Uri,
     },
     response::{IntoResponse, Redirect, Response},
-    Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Args;
@@ -23,7 +23,7 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
 };
 use rustls::ServerConfig;
-use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::{Deserialize, Serialize};
 use tokio::{join, runtime::Handle, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};

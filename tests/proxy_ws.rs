@@ -1,14 +1,14 @@
 use axum::{
+    Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-use serve::{build_client, proxy_router, ProxyState};
+use serve::{ProxyState, build_client, proxy_router};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;

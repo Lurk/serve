@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use serde::{Deserialize, Serialize};
 
-use crate::{errors::ServeError, proxy::ProxyRoute, tls::Tls};
+use crate::{errors::ServeError, proxy::ProxyRoute, stats::config::StatsConfig, tls::Tls};
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
@@ -107,6 +107,10 @@ pub struct ServeArgs {
     /// Maximum number of log files to keep.
     #[clap(long, requires = "log_path", default_value = "7")]
     pub log_max_files: Option<usize>,
+    /// Stats subsystem configuration (TOML-only, no CLI flags).
+    #[clap(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<StatsConfig>,
 }
 
 fn parse_proxy_arg(s: &str) -> Result<ProxyRoute, String> {
@@ -180,6 +184,7 @@ impl ServeArgs {
             } else {
                 self.proxy
             },
+            stats: self.stats.or(config.stats),
         })
     }
 

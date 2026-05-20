@@ -1,12 +1,12 @@
 use axum::{
+    Router,
     extract::{
-        ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade},
         ConnectInfo, FromRequestParts, Request, State,
+        ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade},
     },
-    http::{uri::Uri, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, uri::Uri},
     response::{IntoResponse, Response},
     routing::any,
-    Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -15,11 +15,11 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
-    tungstenite::{
-        protocol::CloseFrame as TungsteniteCloseFrame, Error as TungsteniteError,
-        Message as TungsteniteMessage,
-    },
     MaybeTlsStream, WebSocketStream,
+    tungstenite::{
+        Error as TungsteniteError, Message as TungsteniteMessage,
+        protocol::CloseFrame as TungsteniteCloseFrame,
+    },
 };
 
 #[allow(dead_code)] // used as serde default
