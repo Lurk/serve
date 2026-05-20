@@ -47,7 +47,7 @@ rustls = { version = "0.23", default-features = false }
 rustls-pki-types = "1.14.1"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio-tungstenite = "0.29.0"
-toml = "1.1"
+toml = "1.1.2"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 argon2 = { version = "0.5.3", features = ["std"] }
 subtle = "2.6.1"
