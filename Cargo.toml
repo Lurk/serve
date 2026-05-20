@@ -55,7 +55,7 @@ rand = "0.10.1"
 smol_str = { version = "0.3.2", default-features = false }
 base64 = "0.22.1"
 http-body = "1.0.1"
-bytes = "1"
+bytes = "1.11.1"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.34.0"
 
