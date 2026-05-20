@@ -52,7 +52,7 @@ rusqlite = { version = "0.39.0", features = ["bundled"] }
 argon2 = { version = "0.5.3", features = ["std"] }
 subtle = "2.6.1"
 rand = "0.10.1"
-smol_str = { version = "0.3.2", default-features = false }
+smol_str = { version = "0.3.6", default-features = false }
 base64 = "0.22.1"
 http-body = "1.0.1"
 bytes = "1.11.1"
