@@ -12,7 +12,7 @@ edition = "2024"
 
 
 [dependencies]
-axum = { version = "0.8.8", features = ["ws"] }
+axum = { version = "0.8.9", features = ["ws"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 clap = { version = "4.6.0", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = [
