@@ -99,14 +99,13 @@ fn discover_config_path() -> Result<PathBuf, ServeError> {
         })?;
         let lines: Vec<&str> = content.lines().map(str::trim).collect();
         for (i, line) in lines.iter().enumerate() {
-            if line.contains("-c") && line.contains("<string>") {
-                if let Some(next) = lines.get(i + 1) {
-                    if let Some(path) = next.strip_prefix("<string>") {
-                        if let Some(path) = path.strip_suffix("</string>") {
-                            return Ok(PathBuf::from(path));
-                        }
-                    }
-                }
+            if line.contains("-c")
+                && line.contains("<string>")
+                && let Some(next) = lines.get(i + 1)
+                && let Some(path) = next.strip_prefix("<string>")
+                && let Some(path) = path.strip_suffix("</string>")
+            {
+                return Ok(PathBuf::from(path));
             }
         }
         Err(ServeError::Service(
@@ -146,12 +145,11 @@ fn generate_systemd_unit(config_path: &Path, config: &ServeArgs) -> String {
     if let Some(ref log_path) = config.log_path {
         read_write_paths.push(log_path.to_string_lossy().into_owned());
     }
-    if let Some(stats) = config.stats.as_ref() {
-        if let Some(parent) = stats.db_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                read_write_paths.push(parent.to_string_lossy().into_owned());
-            }
-        }
+    if let Some(stats) = config.stats.as_ref()
+        && let Some(parent) = stats.db_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        read_write_paths.push(parent.to_string_lossy().into_owned());
     }
     let read_write = read_write_paths.join(" ");
 
@@ -248,10 +246,10 @@ pub fn init(args: &InitArgs) -> Result<(), ServeError> {
         )));
     }
 
-    if let Some(parent) = config_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = config_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     std::fs::write(&config_path, generate_default_config())?;

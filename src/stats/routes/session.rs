@@ -14,10 +14,10 @@ pub fn get_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookies = headers.get(COOKIE)?.to_str().ok()?;
     for part in cookies.split(';') {
         let p = part.trim();
-        if let Some(rest) = p.strip_prefix(name) {
-            if let Some(val) = rest.strip_prefix('=') {
-                return Some(val.to_string());
-            }
+        if let Some(rest) = p.strip_prefix(name)
+            && let Some(val) = rest.strip_prefix('=')
+        {
+            return Some(val.to_string());
         }
     }
     None

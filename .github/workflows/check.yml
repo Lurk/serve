@@ -99,7 +99,7 @@ jobs:
     # https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
     strategy:
       matrix:
-        msrv: ["1.85.0"] # 2024 edition
+        msrv: ["1.89.0"] # smol_str 0.3.6 requires 1.89
     name: ubuntu / ${{ matrix.msrv }}
     steps:
       - uses: actions/checkout@v4

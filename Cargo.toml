@@ -2,7 +2,7 @@
 name = "serve"
 authors = ["Serhiy Barhamon"]
 description = "A simple tool to serve static files from a directory."
-rust-version = "1.85.0"
+rust-version = "1.89.0" # smol_str 0.3.6 requires 1.89
 repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls", "proxy"]

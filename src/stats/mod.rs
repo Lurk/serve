@@ -123,15 +123,15 @@ impl StatsHandle {
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
         let timeout = std::time::Duration::from_secs(5);
-        if let Some(w) = self.writer.take() {
-            if tokio::time::timeout(timeout, w).await.is_err() {
-                tracing::warn!(target: "serve::stats", "writer task did not shut down within 5s; aborting");
-            }
+        if let Some(w) = self.writer.take()
+            && tokio::time::timeout(timeout, w).await.is_err()
+        {
+            tracing::warn!(target: "serve::stats", "writer task did not shut down within 5s; aborting");
         }
-        if let Some(r) = self.rollup.take() {
-            if tokio::time::timeout(timeout, r).await.is_err() {
-                tracing::warn!(target: "serve::stats", "rollup task did not shut down within 5s; aborting");
-            }
+        if let Some(r) = self.rollup.take()
+            && tokio::time::timeout(timeout, r).await.is_err()
+        {
+            tracing::warn!(target: "serve::stats", "rollup task did not shut down within 5s; aborting");
         }
     }
 }

@@ -56,10 +56,11 @@ impl Store {
     /// # Errors
     /// Returns error if creating parent dir, opening the database, or running migrations fails.
     pub fn open(db_path: &Path) -> Result<Self, ServeError> {
-        if let Some(parent) = db_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = db_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let manager = SqliteConnectionManager::file(db_path).with_init(|c| {
             // WAL is sticky on the file once set, but re-issuing on each new

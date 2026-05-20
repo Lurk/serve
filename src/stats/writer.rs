@@ -149,11 +149,10 @@ impl WriterTask {
                 maybe_ev = self.rx.recv() => {
                     if let Some(ev) = maybe_ev {
                         self.ingest(ev);
-                        if self.map.len() >= FLUSH_KEY_THRESHOLD {
-                            if let Err(e) = self.flush() {
+                        if self.map.len() >= FLUSH_KEY_THRESHOLD
+                            && let Err(e) = self.flush() {
                                 tracing::warn!(target: "serve::stats::writer", "size-flush failed: {e}");
                             }
-                        }
                     } else {
                         // Sender dropped — drain & exit.
                         let _ = self.flush();
