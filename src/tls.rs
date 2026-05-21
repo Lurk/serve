@@ -80,6 +80,17 @@ pub struct Tls {
     pub redirect_http: bool,
 }
 
+/// Run the TLS-enabled HTTP server with hot-reloading of the certificate.
+///
+/// Binds `service` to `addr` using rustls, runs an optional HTTP-to-HTTPS
+/// redirect on port 80, and watches the cert and key files for changes so
+/// the server can reload them without restarting.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` if binding the socket fails, the cert or key
+/// files cannot be read, or the watcher cannot install its inotify hooks.
+/// Returns `ServeError::Notify` for filesystem-watcher errors.
 pub async fn start_tls_server(
     service: IntoMakeServiceWithConnectInfo<Router, SocketAddr>,
     addr: SocketAddr,
@@ -170,7 +181,17 @@ async fn redirect(req: Request) -> Response {
     Redirect::permanent(destination.to_string().as_str()).into_response()
 }
 
-async fn init_certificate_watch(
+/// Watch the cert and key files and hot-reload the TLS configuration on change.
+///
+/// Runs forever, listening for filesystem events in the parent directories of the
+/// configured cert and key paths. On each relevant event the configuration is rebuilt
+/// and atomically swapped into `tls_config`.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` if the initial read of the cert or key files fails, or
+/// `ServeError::Notify` if the watcher cannot install its inotify hooks.
+pub async fn init_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
 ) -> Result<(), errors::ServeError> {
