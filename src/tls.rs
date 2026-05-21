@@ -31,18 +31,21 @@ use tracing::Level;
 
 use crate::errors;
 
-fn build_server_config(
-    cert_path: &Path,
-    key_path: &Path,
+/// Build a rustls `ServerConfig` from in-memory PEM-encoded cert and key bytes.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` (wrapping `io::ErrorKind::InvalidData`) if PEM
+/// parsing fails or the key type is not supported by rustls.
+pub fn build_server_config_from_bytes(
+    cert_pem: &[u8],
+    key_pem: &[u8],
 ) -> Result<Arc<ServerConfig>, errors::ServeError> {
-    let cert_pem = std::fs::read(cert_path)?;
-    let key_pem = std::fs::read(key_path)?;
-
-    let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(&cert_pem)
+    let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let key = PrivateKeyDer::from_pem_slice(&key_pem)
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     let mut config = ServerConfig::builder()
@@ -53,6 +56,15 @@ fn build_server_config(
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(Arc::new(config))
+}
+
+fn build_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<Arc<ServerConfig>, errors::ServeError> {
+    let cert_pem = std::fs::read(cert_path)?;
+    let key_pem = std::fs::read(key_path)?;
+    build_server_config_from_bytes(&cert_pem, &key_pem)
 }
 
 #[derive(Args, Debug, Serialize, Deserialize, Clone)]
@@ -270,5 +282,16 @@ mod tests {
     fn rewrite_authority_non_80_port_unchanged() {
         let result = rewrite_authority_https("example.com:8080").unwrap();
         assert_eq!(result.as_str(), "example.com:8080");
+    }
+
+    #[test]
+    fn build_server_config_from_bytes_rejects_partial_pem() {
+        let truncated_cert = b"-----BEGIN CERTIFICATE-----\nMIIB";
+        let truncated_key = b"-----BEGIN PRIVATE KEY-----\nMIIE";
+        let result = super::build_server_config_from_bytes(truncated_cert, truncated_key);
+        assert!(
+            result.is_err(),
+            "expected partial PEM to be rejected, got Ok"
+        );
     }
 }
