@@ -174,11 +174,24 @@ async fn init_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
 ) -> Result<(), errors::ServeError> {
+    use sha2::{Digest, Sha256};
+
+    fn hash_pair(cert: &[u8], key: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(cert);
+        h.update(key);
+        h.finalize().into()
+    }
+
     const RETRY_INITIAL: Duration = Duration::from_secs(1);
     const RETRY_MAX: Duration = Duration::from_secs(30);
     let mut delay = RETRY_INITIAL;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let retry_tx = tx.clone();
+
+    let initial_cert = tokio::fs::read(&serve_config.cert).await?;
+    let initial_key = tokio::fs::read(&serve_config.key).await?;
+    let mut last_hash = hash_pair(&initial_cert, &initial_key);
 
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
@@ -207,10 +220,34 @@ async fn init_certificate_watch(
         sleep(Duration::from_secs(2)).await;
         while rx.try_recv().is_ok() {}
 
-        tracing::info!("reloading rustls configuration");
-        match build_server_config(&serve_config.cert, &serve_config.key) {
+        // Cert and key are read independently. If a rotation tool swaps them
+        // non-atomically and we observe a half-rotated pair, build_server_config_from_bytes
+        // will fail (key/cert mismatch) and the Err arm below schedules a retry that
+        // picks up the consistent pair on the next event.
+        let cert_bytes = match tokio::fs::read(&serve_config.cert).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("cert read failed during reload: {}", e);
+                continue;
+            }
+        };
+        let key_bytes = match tokio::fs::read(&serve_config.key).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("key read failed during reload: {}", e);
+                continue;
+            }
+        };
+        let new_hash = hash_pair(&cert_bytes, &key_bytes);
+        if new_hash == last_hash {
+            tracing::debug!("cert/key unchanged, skipping reload");
+            continue;
+        }
+
+        match build_server_config_from_bytes(&cert_bytes, &key_bytes) {
             Ok(new_config) => {
                 tls_config.reload_from_config(new_config);
+                last_hash = new_hash;
                 tracing::info!("rustls configuration reload successful");
                 delay = RETRY_INITIAL;
             }
