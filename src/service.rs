@@ -77,10 +77,10 @@ fn discover_config_path() -> Result<PathBuf, ServeError> {
             if let Some(exec) = line.strip_prefix("ExecStart=") {
                 let parts: Vec<&str> = exec.split_whitespace().collect();
                 for (i, part) in parts.iter().enumerate() {
-                    if *part == "-c" || *part == "--config" {
-                        if let Some(path) = parts.get(i + 1) {
-                            return Ok(PathBuf::from(path));
-                        }
+                    if (*part == "-c" || *part == "--config")
+                        && let Some(path) = parts.get(i + 1)
+                    {
+                        return Ok(PathBuf::from(path));
                     }
                 }
             }
