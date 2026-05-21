@@ -67,7 +67,7 @@ nursery = { level = "warn", priority = -1 }
 result_large_err = "allow"
 
 [dev-dependencies]
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["test-util"] }
 rcgen = "0.14.8"
