@@ -174,7 +174,9 @@ async fn init_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
 ) -> Result<(), errors::ServeError> {
-    let mut delay: u64 = 1;
+    const RETRY_INITIAL: Duration = Duration::from_secs(1);
+    const RETRY_MAX: Duration = Duration::from_secs(30);
+    let mut delay = RETRY_INITIAL;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let retry_tx = tx.clone();
 
@@ -210,13 +212,13 @@ async fn init_certificate_watch(
             Ok(new_config) => {
                 tls_config.reload_from_config(new_config);
                 tracing::info!("rustls configuration reload successful");
-                delay = 1;
+                delay = RETRY_INITIAL;
             }
             Err(e) => {
-                delay *= 2;
+                delay = (delay * 2).min(RETRY_MAX);
                 tracing::error!("rustls reload error: {}", e);
-                tracing::info!("sleep {} milliseconds before retry", delay);
-                sleep(Duration::from_millis(delay)).await;
+                tracing::info!("sleep {:?} before retry", delay);
+                sleep(delay).await;
                 if retry_tx.send(()).await.is_err() {
                     tracing::warn!("certificate watcher channel closed, stopping retries");
                     break;
