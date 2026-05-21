@@ -25,7 +25,7 @@ use notify::{
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::{Deserialize, Serialize};
-use tokio::{join, runtime::Handle, time::sleep};
+use tokio::{join, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -176,34 +176,16 @@ async fn init_certificate_watch(
 ) -> Result<(), errors::ServeError> {
     let mut delay: u64 = 1;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let rt = Handle::current();
     let retry_tx = tx.clone();
-
-    let cert_path = tokio::fs::canonicalize(&serve_config.cert)
-        .await
-        .unwrap_or_else(|_| serve_config.cert.clone());
-    let key_path = tokio::fs::canonicalize(&serve_config.key)
-        .await
-        .unwrap_or_else(|_| serve_config.key.clone());
-
-    let watched_cert = cert_path.clone();
-    let watched_key = key_path.clone();
 
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
             Ok(event) => {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    let dominated = event.paths.iter().any(|p| {
-                        // Sync canonicalize is fine here: notify runs callbacks on its own thread
-                        let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-                        canonical == watched_cert || canonical == watched_key
-                    });
-                    if dominated {
-                        let tx = tx.clone();
-                        rt.spawn(async move {
-                            let _ = tx.send(()).await;
-                        });
-                    }
+                    // Channel is a 1-slot wake-up signal, not a queue: if a wake-up
+                    // is already pending, drop this event — the loop will read the
+                    // current file state once it drains.
+                    let _ = tx.try_send(());
                 }
             }
             Err(e) => tracing::error!("watcher error: {}", e),
@@ -211,12 +193,8 @@ async fn init_certificate_watch(
         Config::default(),
     )?;
 
-    let cert_dir = cert_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic("cert path has no parent directory"))
-    })?;
-    let key_dir = key_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic("key path has no parent directory"))
-    })?;
+    let cert_dir = watch_dir(&serve_config.cert);
+    let key_dir = watch_dir(&serve_config.key);
 
     watcher.watch(cert_dir, RecursiveMode::NonRecursive)?;
     if key_dir != cert_dir {
@@ -248,6 +226,18 @@ async fn init_certificate_watch(
     }
 
     Ok(())
+}
+
+/// Directory to watch for changes to a cert or key file.
+///
+/// `Path::parent` returns `Some("")` for a bare filename and `None` only for
+/// the filesystem root; in both cases we fall back to the current directory so
+/// notify gets a real path to watch.
+fn watch_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +272,27 @@ mod tests {
     fn rewrite_authority_non_80_port_unchanged() {
         let result = rewrite_authority_https("example.com:8080").unwrap();
         assert_eq!(result.as_str(), "example.com:8080");
+    }
+
+    #[test]
+    fn watch_dir_for_bare_filename_is_current_dir() {
+        assert_eq!(super::watch_dir(Path::new("cert.pem")), Path::new("."));
+    }
+
+    #[test]
+    fn watch_dir_for_absolute_path_is_parent() {
+        assert_eq!(
+            super::watch_dir(Path::new("/etc/ssl/cert.pem")),
+            Path::new("/etc/ssl")
+        );
+    }
+
+    #[test]
+    fn watch_dir_for_relative_with_dirs_is_parent() {
+        assert_eq!(
+            super::watch_dir(Path::new("certs/cert.pem")),
+            Path::new("certs")
+        );
     }
 
     #[test]
