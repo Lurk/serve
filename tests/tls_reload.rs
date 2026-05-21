@@ -17,11 +17,11 @@ struct CertPair {
 }
 
 fn gen_cert(cn: &str) -> CertPair {
-    let CertifiedKey { cert, key_pair } =
+    let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec![cn.to_string()]).expect("rcgen");
     CertPair {
         cert_pem: cert.pem(),
-        key_pem: key_pair.serialize_pem(),
+        key_pem: signing_key.serialize_pem(),
     }
 }
 
