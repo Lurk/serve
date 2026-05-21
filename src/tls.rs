@@ -25,24 +25,27 @@ use notify::{
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::{Deserialize, Serialize};
-use tokio::{join, runtime::Handle, time::sleep};
+use tokio::{join, time::sleep};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::errors;
 
-fn build_server_config(
-    cert_path: &Path,
-    key_path: &Path,
+/// Build a rustls `ServerConfig` from in-memory PEM-encoded cert and key bytes.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` (wrapping `io::ErrorKind::InvalidData`) if PEM
+/// parsing fails or the key type is not supported by rustls.
+pub fn build_server_config_from_bytes(
+    cert_pem: &[u8],
+    key_pem: &[u8],
 ) -> Result<Arc<ServerConfig>, errors::ServeError> {
-    let cert_pem = std::fs::read(cert_path)?;
-    let key_pem = std::fs::read(key_path)?;
-
-    let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(&cert_pem)
+    let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let key = PrivateKeyDer::from_pem_slice(&key_pem)
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     let mut config = ServerConfig::builder()
@@ -53,6 +56,15 @@ fn build_server_config(
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(Arc::new(config))
+}
+
+fn build_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<Arc<ServerConfig>, errors::ServeError> {
+    let cert_pem = std::fs::read(cert_path)?;
+    let key_pem = std::fs::read(key_path)?;
+    build_server_config_from_bytes(&cert_pem, &key_pem)
 }
 
 #[derive(Args, Debug, Serialize, Deserialize, Clone)]
@@ -68,6 +80,17 @@ pub struct Tls {
     pub redirect_http: bool,
 }
 
+/// Run the TLS-enabled HTTP server with hot-reloading of the certificate.
+///
+/// Binds `service` to `addr` using rustls, runs an optional HTTP-to-HTTPS
+/// redirect on port 80, and watches the cert and key files for changes so
+/// the server can reload them without restarting.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` if binding the socket fails, the cert or key
+/// files cannot be read, or the watcher cannot install its inotify hooks.
+/// Returns `ServeError::Notify` for filesystem-watcher errors.
 pub async fn start_tls_server(
     service: IntoMakeServiceWithConnectInfo<Router, SocketAddr>,
     addr: SocketAddr,
@@ -158,40 +181,48 @@ async fn redirect(req: Request) -> Response {
     Redirect::permanent(destination.to_string().as_str()).into_response()
 }
 
-async fn init_certificate_watch(
+/// Watch the cert and key files and hot-reload the TLS configuration on change.
+///
+/// Runs forever, listening for filesystem events in the parent directories of the
+/// configured cert and key paths. On each relevant event the configuration is rebuilt
+/// and atomically swapped into `tls_config`.
+///
+/// # Errors
+///
+/// Returns `ServeError::Io` if the initial read of the cert or key files fails, or
+/// `ServeError::Notify` if the watcher cannot install its inotify hooks.
+pub async fn init_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
 ) -> Result<(), errors::ServeError> {
-    let mut delay: u64 = 1;
+    use sha2::{Digest, Sha256};
+
+    fn hash_pair(cert: &[u8], key: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(cert);
+        h.update(key);
+        h.finalize().into()
+    }
+
+    const RETRY_INITIAL: Duration = Duration::from_secs(1);
+    const RETRY_MAX: Duration = Duration::from_secs(30);
+    let mut delay = RETRY_INITIAL;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let rt = Handle::current();
     let retry_tx = tx.clone();
 
-    let cert_path = tokio::fs::canonicalize(&serve_config.cert)
-        .await
-        .unwrap_or_else(|_| serve_config.cert.clone());
-    let key_path = tokio::fs::canonicalize(&serve_config.key)
-        .await
-        .unwrap_or_else(|_| serve_config.key.clone());
-
-    let watched_cert = cert_path.clone();
-    let watched_key = key_path.clone();
+    let initial_cert = tokio::fs::read(&serve_config.cert).await?;
+    let initial_key = tokio::fs::read(&serve_config.key).await?;
+    let mut last_hash = hash_pair(&initial_cert, &initial_key);
+    log_cert_info(&initial_cert, "rustls initial load");
 
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
             Ok(event) => {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    let dominated = event.paths.iter().any(|p| {
-                        // Sync canonicalize is fine here: notify runs callbacks on its own thread
-                        let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-                        canonical == watched_cert || canonical == watched_key
-                    });
-                    if dominated {
-                        let tx = tx.clone();
-                        rt.spawn(async move {
-                            let _ = tx.send(()).await;
-                        });
-                    }
+                    // Channel is a 1-slot wake-up signal, not a queue: if a wake-up
+                    // is already pending, drop this event — the loop will read the
+                    // current file state once it drains.
+                    let _ = tx.try_send(());
                 }
             }
             Err(e) => tracing::error!("watcher error: {}", e),
@@ -199,12 +230,8 @@ async fn init_certificate_watch(
         Config::default(),
     )?;
 
-    let cert_dir = cert_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic("cert path has no parent directory"))
-    })?;
-    let key_dir = key_path.parent().ok_or_else(|| {
-        errors::ServeError::Notify(notify::Error::generic("key path has no parent directory"))
-    })?;
+    let cert_dir = watch_dir(&serve_config.cert);
+    let key_dir = watch_dir(&serve_config.key);
 
     watcher.watch(cert_dir, RecursiveMode::NonRecursive)?;
     if key_dir != cert_dir {
@@ -215,18 +242,43 @@ async fn init_certificate_watch(
         sleep(Duration::from_secs(2)).await;
         while rx.try_recv().is_ok() {}
 
-        tracing::info!("reloading rustls configuration");
-        match build_server_config(&serve_config.cert, &serve_config.key) {
+        // Cert and key are read independently. If a rotation tool swaps them
+        // non-atomically and we observe a half-rotated pair, build_server_config_from_bytes
+        // will fail (key/cert mismatch) and the Err arm below schedules a retry that
+        // picks up the consistent pair on the next event.
+        let cert_bytes = match tokio::fs::read(&serve_config.cert).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("cert read failed during reload: {}", e);
+                continue;
+            }
+        };
+        let key_bytes = match tokio::fs::read(&serve_config.key).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("key read failed during reload: {}", e);
+                continue;
+            }
+        };
+        let new_hash = hash_pair(&cert_bytes, &key_bytes);
+        if new_hash == last_hash {
+            tracing::debug!("cert/key unchanged, skipping reload");
+            continue;
+        }
+
+        match build_server_config_from_bytes(&cert_bytes, &key_bytes) {
             Ok(new_config) => {
                 tls_config.reload_from_config(new_config);
+                last_hash = new_hash;
+                log_cert_info(&cert_bytes, "rustls reload");
                 tracing::info!("rustls configuration reload successful");
-                delay = 1;
+                delay = RETRY_INITIAL;
             }
             Err(e) => {
-                delay *= 2;
+                delay = (delay * 2).min(RETRY_MAX);
                 tracing::error!("rustls reload error: {}", e);
-                tracing::info!("sleep {} milliseconds before retry", delay);
-                sleep(Duration::from_millis(delay)).await;
+                tracing::info!("sleep {:?} before retry", delay);
+                sleep(delay).await;
                 if retry_tx.send(()).await.is_err() {
                     tracing::warn!("certificate watcher channel closed, stopping retries");
                     break;
@@ -236,6 +288,73 @@ async fn init_certificate_watch(
     }
 
     Ok(())
+}
+
+/// Directory to watch for changes to a cert or key file.
+///
+/// `Path::parent` returns `Some("")` for a bare filename and `None` only for
+/// the filesystem root; in both cases we fall back to the current directory so
+/// notify gets a real path to watch.
+fn watch_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}
+
+fn log_cert_info(cert_pem: &[u8], context: &str) {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    use x509_parser::prelude::*;
+
+    let Some(Ok(first_der)) = CertificateDer::pem_slice_iter(cert_pem).next() else {
+        tracing::warn!("{context}: could not extract leaf cert from PEM for logging");
+        return;
+    };
+    let der_bytes: &[u8] = first_der.as_ref();
+
+    let parsed = match X509Certificate::from_der(der_bytes) {
+        Ok((_, parsed)) => parsed,
+        Err(e) => {
+            tracing::warn!("{context}: x509 parse failed: {e}");
+            return;
+        }
+    };
+
+    let cn = parsed
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|attr| attr.as_str().ok())
+        .unwrap_or("?");
+    let sans = parsed
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .map(|ext| {
+            ext.value
+                .general_names
+                .iter()
+                .filter_map(|gn| match gn {
+                    GeneralName::DNSName(s) => Some((*s).to_string()),
+                    GeneralName::IPAddress(bytes) => Some(format!("ip:{bytes:02x?}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    let not_after = parsed.validity().not_after.to_string();
+
+    let fp = Sha256::digest(der_bytes);
+    let mut fp_hex = String::with_capacity(16);
+    for byte in &fp[..8] {
+        let _ = write!(&mut fp_hex, "{byte:02x}");
+    }
+
+    tracing::info!(
+        "{context}: subject_cn={cn} sans=[{sans}] not_after={not_after} fingerprint={fp_hex}"
+    );
 }
 
 #[cfg(test)]
@@ -270,5 +389,37 @@ mod tests {
     fn rewrite_authority_non_80_port_unchanged() {
         let result = rewrite_authority_https("example.com:8080").unwrap();
         assert_eq!(result.as_str(), "example.com:8080");
+    }
+
+    #[test]
+    fn watch_dir_for_bare_filename_is_current_dir() {
+        assert_eq!(super::watch_dir(Path::new("cert.pem")), Path::new("."));
+    }
+
+    #[test]
+    fn watch_dir_for_absolute_path_is_parent() {
+        assert_eq!(
+            super::watch_dir(Path::new("/etc/ssl/cert.pem")),
+            Path::new("/etc/ssl")
+        );
+    }
+
+    #[test]
+    fn watch_dir_for_relative_with_dirs_is_parent() {
+        assert_eq!(
+            super::watch_dir(Path::new("certs/cert.pem")),
+            Path::new("certs")
+        );
+    }
+
+    #[test]
+    fn build_server_config_from_bytes_rejects_partial_pem() {
+        let truncated_cert = b"-----BEGIN CERTIFICATE-----\nMIIB";
+        let truncated_key = b"-----BEGIN PRIVATE KEY-----\nMIIE";
+        let result = super::build_server_config_from_bytes(truncated_cert, truncated_key);
+        assert!(
+            result.is_err(),
+            "expected partial PEM to be rejected, got Ok"
+        );
     }
 }

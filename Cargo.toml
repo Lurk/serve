@@ -2,7 +2,7 @@
 name = "serve"
 authors = ["Serhiy Barhamon"]
 description = "A simple tool to serve static files from a directory."
-rust-version = "1.89.0" # smol_str 0.3.6 requires 1.89
+rust-version = "1.89.0"                                               # smol_str 0.3.6 requires 1.89
 repository = "https://github.com/Lurk/serve.git"
 license = "MIT"
 keywords = ["http", "server", "static", "tls", "proxy"]
@@ -46,6 +46,7 @@ notify = "8.2.0"
 rustls = { version = "0.23", default-features = false }
 rustls-pki-types = "1.14.1"
 serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.11.0"
 tokio-tungstenite = "0.29.0"
 toml = "1.1.2"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
@@ -58,6 +59,7 @@ http-body = "1.0.1"
 bytes = "1.11.1"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.34.0"
+x509-parser = "0.16"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -68,6 +70,7 @@ result_large_err = "allow"
 serde_json = "1.0.149"
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["test-util"] }
+rcgen = "0.13"
 reqwest = { version = "0.13.3", default-features = false, features = [
 	"cookies",
 	"form",
