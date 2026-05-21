@@ -192,6 +192,7 @@ async fn init_certificate_watch(
     let initial_cert = tokio::fs::read(&serve_config.cert).await?;
     let initial_key = tokio::fs::read(&serve_config.key).await?;
     let mut last_hash = hash_pair(&initial_cert, &initial_key);
+    log_cert_info(&initial_cert, "rustls initial load");
 
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
@@ -248,6 +249,7 @@ async fn init_certificate_watch(
             Ok(new_config) => {
                 tls_config.reload_from_config(new_config);
                 last_hash = new_hash;
+                log_cert_info(&cert_bytes, "rustls reload");
                 tracing::info!("rustls configuration reload successful");
                 delay = RETRY_INITIAL;
             }
@@ -277,6 +279,61 @@ fn watch_dir(path: &Path) -> &Path {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     }
+}
+
+fn log_cert_info(cert_pem: &[u8], context: &str) {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    use x509_parser::prelude::*;
+
+    let Some(Ok(first_der)) = CertificateDer::pem_slice_iter(cert_pem).next() else {
+        tracing::warn!("{context}: could not extract leaf cert from PEM for logging");
+        return;
+    };
+    let der_bytes: &[u8] = first_der.as_ref();
+
+    let parsed = match X509Certificate::from_der(der_bytes) {
+        Ok((_, parsed)) => parsed,
+        Err(e) => {
+            tracing::warn!("{context}: x509 parse failed: {e}");
+            return;
+        }
+    };
+
+    let cn = parsed
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|attr| attr.as_str().ok())
+        .unwrap_or("?");
+    let sans = parsed
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .map(|ext| {
+            ext.value
+                .general_names
+                .iter()
+                .filter_map(|gn| match gn {
+                    GeneralName::DNSName(s) => Some((*s).to_string()),
+                    GeneralName::IPAddress(bytes) => Some(format!("ip:{bytes:02x?}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    let not_after = parsed.validity().not_after.to_string();
+
+    let fp = Sha256::digest(der_bytes);
+    let mut fp_hex = String::with_capacity(16);
+    for byte in &fp[..8] {
+        let _ = write!(&mut fp_hex, "{byte:02x}");
+    }
+
+    tracing::info!(
+        "{context}: subject_cn={cn} sans=[{sans}] not_after={not_after} fingerprint={fp_hex}"
+    );
 }
 
 #[cfg(test)]
