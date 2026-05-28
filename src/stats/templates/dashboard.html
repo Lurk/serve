@@ -6,7 +6,7 @@
   <style>
     :root {
       --bg: #fafafa; --fg: #222; --muted: #666; --border: #ddd;
-      --c2: #38a169; --c3: #3182ce; --c4: #d69e2e; --c5: #e53e3e;
+      --c1: #805ad5; --c2: #38a169; --c3: #3182ce; --c4: #d69e2e; --c5: #e53e3e;
       --warn-bg: #fff3cd; --warn-fg: #664d03;
     }
     @media (prefers-color-scheme: dark) {
@@ -39,8 +39,9 @@
     .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted); }
     .legend .sw { display: inline-block; width: 0.8em; height: 0.8em;
                   margin-right: 0.2em; vertical-align: middle; }
-    .sw.c2 { background: var(--c2); } .sw.c3 { background: var(--c3); }
-    .sw.c4 { background: var(--c4); } .sw.c5 { background: var(--c5); }
+    .sw.c1 { background: var(--c1); } .sw.c2 { background: var(--c2); }
+    .sw.c3 { background: var(--c3); } .sw.c4 { background: var(--c4); }
+    .sw.c5 { background: var(--c5); }
     table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     th, td { padding: 0.4em 0.6em; text-align: left;
              border-bottom: 1px solid var(--border); }
@@ -74,23 +75,13 @@
   <div class="panel">
     <h2>Requests over time</h2>
     <svg id="chart-req" class="chart"></svg>
-    <div class="legend">
-      <span><span class="sw c2"></span>2xx</span>
-      <span><span class="sw c3"></span>3xx</span>
-      <span><span class="sw c4"></span>4xx</span>
-      <span><span class="sw c5"></span>5xx</span>
-    </div>
+    <div class="legend"></div>
   </div>
 
   <div class="panel">
     <h2>Bytes delivered</h2>
     <svg id="chart-bytes" class="chart"></svg>
-    <div class="legend">
-      <span><span class="sw c2"></span>2xx</span>
-      <span><span class="sw c3"></span>3xx</span>
-      <span><span class="sw c4"></span>4xx</span>
-      <span><span class="sw c5"></span>5xx</span>
-    </div>
+    <div class="legend"></div>
   </div>
 
   <div class="panel">
@@ -134,11 +125,27 @@
   let lastTs = null;
   let lastTsWindow = null;
 
+  function activeClasses(points) {
+    return CLASS_DIGITS.filter(cd => points.some(p => {
+      const m = p.by_class[cd];
+      return m && (m.requests > 0 || m.bytes > 0);
+    }));
+  }
+
+  function renderLegend(panelEl, series) {
+    const legend = panelEl.querySelector('.legend');
+    legend.innerHTML = series.map(cd =>
+      `<span><span class="sw c${cd}"></span>${cd}xx</span>`
+    ).join('');
+  }
+
   function drawCharts() {
     if (!lastTs) return;
-    const series = [2, 3, 4, 5];
+    const series = activeClasses(lastTs.points);
     const reqPanel = document.querySelector('#chart-req').closest('.panel');
     const bytesPanel = document.querySelector('#chart-bytes').closest('.panel');
+    renderLegend(reqPanel, series);
+    renderLegend(bytesPanel, series);
     renderChart(reqPanel, lastTs.points, 'requests', lastTsWindow, series);
     renderChart(bytesPanel, lastTs.points, 'bytes', lastTsWindow, series);
   }
@@ -240,6 +247,8 @@
     }
     return d.toISOString();
   }
+
+  const CLASS_DIGITS = [1, 2, 3, 4, 5];
 
   function renderChart(panelEl, points, metric, win, series) {
     const svg = panelEl.querySelector('svg.chart');
