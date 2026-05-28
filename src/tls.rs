@@ -181,47 +181,120 @@ async fn redirect(req: Request) -> Response {
     Redirect::permanent(destination.to_string().as_str()).into_response()
 }
 
-/// Watch the cert and key files and hot-reload the TLS configuration on change.
+const RETRY_INITIAL: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+const DEBOUNCE: Duration = Duration::from_secs(2);
+
+fn hash_pair(cert: &[u8], key: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(cert);
+    h.update(key);
+    h.finalize().into()
+}
+
+/// Outcome of a single read + conditional reload of the cert/key pair.
+enum ReloadOutcome {
+    /// Pair changed and was successfully swapped in; carries the new hash.
+    Reloaded([u8; 32]),
+    /// Pair is byte-identical to `last_hash`; nothing to do.
+    Unchanged,
+    /// A cert or key read failed (transient); already logged.
+    ReadFailed,
+    /// The pair could not be built into a config (e.g. half-rotated); logged.
+    BuildFailed,
+}
+
+/// Read the cert and key, and reload `tls_config` if the pair changed.
 ///
-/// Runs forever, listening for filesystem events in the parent directories of the
-/// configured cert and key paths. On each relevant event the configuration is rebuilt
-/// and atomically swapped into `tls_config`.
+/// Reads are independent: observing a half-rotated pair yields `BuildFailed`,
+/// which callers turn into a retry that picks up the consistent pair later.
+async fn read_and_reload_if_changed(
+    tls_config: &RustlsConfig,
+    cert_path: &Path,
+    key_path: &Path,
+    last_hash: [u8; 32],
+    context: &str,
+) -> ReloadOutcome {
+    let cert_bytes = match tokio::fs::read(cert_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("cert read failed during {context}: {e}");
+            return ReloadOutcome::ReadFailed;
+        }
+    };
+    let key_bytes = match tokio::fs::read(key_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("key read failed during {context}: {e}");
+            return ReloadOutcome::ReadFailed;
+        }
+    };
+
+    let new_hash = hash_pair(&cert_bytes, &key_bytes);
+    if new_hash == last_hash {
+        tracing::debug!("cert/key unchanged, skipping reload");
+        return ReloadOutcome::Unchanged;
+    }
+
+    match build_server_config_from_bytes(&cert_bytes, &key_bytes) {
+        Ok(new_config) => {
+            tls_config.reload_from_config(new_config);
+            log_cert_info(&cert_bytes, context);
+            tracing::info!("{context}: rustls configuration applied");
+            ReloadOutcome::Reloaded(new_hash)
+        }
+        Err(e) => {
+            tracing::error!("rustls reload error: {e}");
+            ReloadOutcome::BuildFailed
+        }
+    }
+}
+
+/// Live cert/key watcher plus the state needed to drive its reload loop.
+///
+/// Returned by [`install_certificate_watch`] once the watcher is live, and
+/// consumed by [`run_certificate_watch`]. Holds the watcher so it stays
+/// installed for the loop's lifetime.
+#[must_use = "dropping WatchState stops the cert watcher; pass it to run_certificate_watch"]
+pub struct WatchState {
+    tls_config: RustlsConfig,
+    cert: PathBuf,
+    key: PathBuf,
+    rx: tokio::sync::mpsc::Receiver<()>,
+    retry_tx: tokio::sync::mpsc::Sender<()>,
+    watcher: RecommendedWatcher,
+    last_hash: [u8; 32],
+}
+
+/// Install the cert/key filesystem watcher and perform the authoritative
+/// initial load.
+///
+/// Returns once the watcher's event stream is live (on macOS, after
+/// `FSEventStreamStart`). Reading the cert/key strictly *after* the watcher is
+/// live closes the startup window: a rotation before this read is reflected in
+/// it, and a rotation after it emits an event. A transient read/parse failure
+/// here is tolerated — the already-bound config is left in place and the load
+/// is retried on the first watch event.
 ///
 /// # Errors
 ///
-/// Returns `ServeError::Io` if the initial read of the cert or key files fails, or
-/// `ServeError::Notify` if the watcher cannot install its inotify hooks.
-pub async fn init_certificate_watch(
+/// Returns `ServeError::Notify` if the watcher cannot be created or cannot
+/// install its hooks.
+pub async fn install_certificate_watch(
     tls_config: RustlsConfig,
     serve_config: &Tls,
-) -> Result<(), errors::ServeError> {
-    use sha2::{Digest, Sha256};
-
-    fn hash_pair(cert: &[u8], key: &[u8]) -> [u8; 32] {
-        let mut h = Sha256::new();
-        h.update(cert);
-        h.update(key);
-        h.finalize().into()
-    }
-
-    const RETRY_INITIAL: Duration = Duration::from_secs(1);
-    const RETRY_MAX: Duration = Duration::from_secs(30);
-    let mut delay = RETRY_INITIAL;
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+) -> Result<WatchState, errors::ServeError> {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
     let retry_tx = tx.clone();
-
-    let initial_cert = tokio::fs::read(&serve_config.cert).await?;
-    let initial_key = tokio::fs::read(&serve_config.key).await?;
-    let mut last_hash = hash_pair(&initial_cert, &initial_key);
-    log_cert_info(&initial_cert, "rustls initial load");
 
     let mut watcher = RecommendedWatcher::new(
         move |res: NotifyResult<Event>| match res {
             Ok(event) => {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    // Channel is a 1-slot wake-up signal, not a queue: if a wake-up
-                    // is already pending, drop this event — the loop will read the
-                    // current file state once it drains.
+                    // 1-slot wake-up signal, not a queue: if a wake-up is already
+                    // pending, drop this event — the loop reads current file state
+                    // once it drains.
                     let _ = tx.try_send(());
                 }
             }
@@ -232,51 +305,72 @@ pub async fn init_certificate_watch(
 
     let cert_dir = watch_dir(&serve_config.cert);
     let key_dir = watch_dir(&serve_config.key);
-
     watcher.watch(cert_dir, RecursiveMode::NonRecursive)?;
     if key_dir != cert_dir {
         watcher.watch(key_dir, RecursiveMode::NonRecursive)?;
     }
 
+    // [0u8; 32] baseline forces this initial load; later changes arrive as events.
+    let last_hash = if let ReloadOutcome::Reloaded(h) = read_and_reload_if_changed(
+        &tls_config,
+        &serve_config.cert,
+        &serve_config.key,
+        [0u8; 32],
+        "rustls initial load",
+    )
+    .await
+    {
+        h
+    } else {
+        tracing::warn!("initial cert/key load deferred to first watch event");
+        [0u8; 32]
+    };
+
+    Ok(WatchState {
+        tls_config,
+        cert: serve_config.cert.clone(),
+        key: serve_config.key.clone(),
+        rx,
+        retry_tx,
+        watcher,
+        last_hash,
+    })
+}
+
+/// Drive the cert/key reload loop until the watcher channel closes.
+///
+/// On each filesystem event the cert and key are re-read and, if changed,
+/// atomically swapped into the shared `RustlsConfig`. A half-rotated pair fails
+/// to build and schedules an exponential-backoff retry that picks up the
+/// consistent pair on the next event. Returns once the watcher is dropped and
+/// the event channel closes.
+pub async fn run_certificate_watch(state: WatchState) {
+    let WatchState {
+        tls_config,
+        cert,
+        key,
+        mut rx,
+        retry_tx,
+        // Bind (don't drop with bare `_`): the watcher must stay alive for the
+        // loop's lifetime, otherwise filesystem events stop arriving.
+        watcher: _watcher,
+        mut last_hash,
+    } = state;
+    let mut delay = RETRY_INITIAL;
+
     while rx.recv().await.is_some() {
-        sleep(Duration::from_secs(2)).await;
+        sleep(DEBOUNCE).await;
         while rx.try_recv().is_ok() {}
 
-        // Cert and key are read independently. If a rotation tool swaps them
-        // non-atomically and we observe a half-rotated pair, build_server_config_from_bytes
-        // will fail (key/cert mismatch) and the Err arm below schedules a retry that
-        // picks up the consistent pair on the next event.
-        let cert_bytes = match tokio::fs::read(&serve_config.cert).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!("cert read failed during reload: {}", e);
-                continue;
-            }
-        };
-        let key_bytes = match tokio::fs::read(&serve_config.key).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!("key read failed during reload: {}", e);
-                continue;
-            }
-        };
-        let new_hash = hash_pair(&cert_bytes, &key_bytes);
-        if new_hash == last_hash {
-            tracing::debug!("cert/key unchanged, skipping reload");
-            continue;
-        }
-
-        match build_server_config_from_bytes(&cert_bytes, &key_bytes) {
-            Ok(new_config) => {
-                tls_config.reload_from_config(new_config);
-                last_hash = new_hash;
-                log_cert_info(&cert_bytes, "rustls reload");
-                tracing::info!("rustls configuration reload successful");
+        match read_and_reload_if_changed(&tls_config, &cert, &key, last_hash, "rustls reload").await
+        {
+            ReloadOutcome::Reloaded(h) => {
+                last_hash = h;
                 delay = RETRY_INITIAL;
             }
-            Err(e) => {
+            ReloadOutcome::Unchanged | ReloadOutcome::ReadFailed => {}
+            ReloadOutcome::BuildFailed => {
                 delay = (delay * 2).min(RETRY_MAX);
-                tracing::error!("rustls reload error: {}", e);
                 tracing::info!("sleep {:?} before retry", delay);
                 sleep(delay).await;
                 if retry_tx.send(()).await.is_err() {
@@ -286,7 +380,22 @@ pub async fn init_certificate_watch(
             }
         }
     }
+}
 
+/// Install the cert/key watcher and run its reload loop forever.
+///
+/// Convenience wrapper over [`install_certificate_watch`] +
+/// [`run_certificate_watch`] for the server startup path.
+///
+/// # Errors
+///
+/// Propagates watcher-installation errors from [`install_certificate_watch`].
+pub async fn init_certificate_watch(
+    tls_config: RustlsConfig,
+    serve_config: &Tls,
+) -> Result<(), errors::ServeError> {
+    let state = install_certificate_watch(tls_config, serve_config).await?;
+    run_certificate_watch(state).await;
     Ok(())
 }
 
