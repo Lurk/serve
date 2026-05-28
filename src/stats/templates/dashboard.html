@@ -30,12 +30,28 @@
     .card .value { font-size: 1.4em; font-weight: 600; margin-top: 0.2em; }
     .panel { margin: 1.5em 0; }
     .panel h2 { font-size: 1em; margin: 0 0 0.5em 0; color: var(--muted); }
+    .chart-wrap { position: relative; }
     svg.chart { width: 100%; height: 220px; display: block;
                 border: 1px solid var(--border); border-radius: 6px; }
     .chart-axis { stroke: var(--muted); stroke-width: 1; fill: none; }
     .chart-grid { stroke: var(--border); stroke-width: 1; fill: none; }
     .chart-tick-label { font: 11px sans-serif; fill: var(--muted); }
     .chart-empty { font: 12px sans-serif; fill: var(--muted); text-anchor: middle; }
+    .chart-guide { stroke: var(--muted); stroke-width: 1;
+                   stroke-dasharray: 3 3; display: none; pointer-events: none; }
+    .chart-tip { position: absolute; display: none; pointer-events: none;
+                 background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 4px;
+                 padding: 0.5em 0.7em; font-size: 0.85em; min-width: 170px;
+                 box-shadow: 0 2px 8px rgba(0,0,0,0.18); z-index: 10; }
+    .chart-tip .ts { font-weight: 600; margin-bottom: 0.35em; }
+    .chart-tip .row { display: flex; justify-content: space-between;
+                      gap: 1em; line-height: 1.5; }
+    .chart-tip .row .sw { display: inline-block; width: 0.7em; height: 0.7em;
+                          margin-right: 0.4em; vertical-align: middle; }
+    .chart-tip .total { border-top: 1px solid var(--border);
+                        margin-top: 0.35em; padding-top: 0.35em;
+                        font-weight: 600; }
     .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted); }
     .legend .sw { display: inline-block; width: 0.8em; height: 0.8em;
                   margin-right: 0.2em; vertical-align: middle; }
@@ -74,13 +90,19 @@
 
   <div class="panel">
     <h2>Requests over time</h2>
-    <svg id="chart-req" class="chart"></svg>
+    <div class="chart-wrap">
+      <svg id="chart-req" class="chart"></svg>
+      <div class="chart-tip" id="tip-req"></div>
+    </div>
     <div class="legend"></div>
   </div>
 
   <div class="panel">
     <h2>Bytes delivered</h2>
-    <svg id="chart-bytes" class="chart"></svg>
+    <div class="chart-wrap">
+      <svg id="chart-bytes" class="chart"></svg>
+      <div class="chart-tip" id="tip-bytes"></div>
+    </div>
     <div class="legend"></div>
   </div>
 
@@ -248,11 +270,53 @@
     return d.toISOString();
   }
 
+  function formatTooltipTs(win, ts) {
+    const d = new Date(ts * 1000);
+    if (win === '1d') {
+      const wd = d.toLocaleDateString([], { weekday: 'short' });
+      const md = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `${wd} ${md}, ${hm}`;
+    }
+    if (win === '7d' || win === '30d') {
+      const wd = d.toLocaleDateString([], { weekday: 'short' });
+      const md = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `${wd} ${md}, ${hm}`;
+    }
+    if (win === '12m') {
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    return d.toISOString();
+  }
+
   const CLASS_DIGITS = [1, 2, 3, 4, 5];
+
+  function buildTipHtml(point, metric, win, series) {
+    const labelFmt = metric === 'bytes' ? fmt.bytes : fmt.int;
+    let total = 0;
+    const rows = series.map(cd => {
+      const m = point.by_class[cd];
+      const v = (m && m[metric]) || 0;
+      total += v;
+      return `<div class="row"><span><span class="sw c${cd}"></span>${cd}xx</span>` +
+             `<span>${labelFmt(v)}</span></div>`;
+    }).join('');
+    return `<div class="ts">${formatTooltipTs(win, point.ts)}</div>` +
+           rows +
+           `<div class="row total"><span>Total</span><span>${labelFmt(total)}</span></div>`;
+  }
 
   function renderChart(panelEl, points, metric, win, series) {
     const svg = panelEl.querySelector('svg.chart');
+    const tip = panelEl.querySelector('.chart-tip');
     while (svg.firstChild) svg.removeChild(svg.firstChild);
+    // Drop handlers and hide the tip up-front, so a re-render (window switch,
+    // resize) cannot leave a stale handler closed over old `points` or a
+    // tooltip visible with old content.
+    svg.onmousemove = null;
+    svg.onmouseleave = null;
+    tip.style.display = 'none';
 
     const W = svg.clientWidth, H = svg.clientHeight;
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -355,6 +419,49 @@
       label.textContent = formatXTickLabel(win, points[i].ts, spanCrossesYear);
       svg.appendChild(label);
     });
+
+    // Initially hidden via CSS.
+    const guide = document.createElementNS(SVG_NS, 'line');
+    guide.setAttribute('class', 'chart-guide');
+    guide.setAttribute('y1', layout.top);
+    guide.setAttribute('y2', layout.top + layout.plotH);
+    svg.appendChild(guide);
+
+    // .chart-tip lives inside .chart-wrap (position:relative), so its
+    // CSS containing block is the wrap, not the panel — measure positions
+    // against the wrap rect.
+    const wrapEl = svg.parentNode;
+    let lastHoverIdx = -1;
+    svg.onmousemove = (e) => {
+      const svgRect = svg.getBoundingClientRect();
+      if (svgRect.width <= 0) return;
+      const wrapRect = wrapEl.getBoundingClientRect();
+      const mx = (e.clientX - svgRect.left) * (W / svgRect.width);
+      const plotX = Math.max(0, Math.min(layout.plotW, mx - layout.left));
+      const i = Math.round((plotX / layout.plotW) * (points.length - 1));
+      const gx = xAt(i);
+      guide.setAttribute('x1', gx);
+      guide.setAttribute('x2', gx);
+      guide.style.display = 'block';
+
+      if (i !== lastHoverIdx) {
+        tip.innerHTML = buildTipHtml(points[i], metric, win, series);
+        lastHoverIdx = i;
+      }
+      tip.style.display = 'block';
+
+      const tipW = tip.offsetWidth;
+      let left = e.clientX - wrapRect.left + 12;
+      if (left + tipW > wrapRect.width - 4) {
+        left = e.clientX - wrapRect.left - 12 - tipW;
+      }
+      tip.style.left = Math.max(4, left) + 'px';
+      tip.style.top = '8px';
+    };
+    svg.onmouseleave = () => {
+      guide.style.display = 'none';
+      tip.style.display = 'none';
+    };
   }
 
   function renderAssets(a) {
