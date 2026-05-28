@@ -15,6 +15,10 @@
     }
     body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
            background: var(--bg); color: var(--fg); margin: 0; padding: 1em 1.5em; }
+    a, a:visited, a:hover, a:active { text-decoration: underline; }
+    a { color: var(--fg); }
+    a:visited { color: color-mix(in srgb, var(--fg), #000 25%); }
+    a:hover { color: color-mix(in srgb, var(--fg), #fff 22%); }
     header { display: flex; justify-content: space-between; align-items: center;
              border-bottom: 1px solid var(--border); padding-bottom: 0.5em; }
     header h1 { font-size: 1.1em; margin: 0; }
@@ -61,7 +65,7 @@
     table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     th, td { padding: 0.4em 0.6em; text-align: left;
              border-bottom: 1px solid var(--border); }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
     .sort-controls { float: right; }
     .warn { background: var(--warn-bg); color: var(--warn-fg);
             padding: 0.5em 0.8em; border-radius: 4px; margin: 0.5em 0;
@@ -466,11 +470,23 @@
 
   function renderAssets(a) {
     const tbody = document.querySelector('#assets tbody');
-    tbody.innerHTML = a.rows.map((r, i) => `
-      <tr><td>${i + 1}</td><td>${escapeHtml(r.path)}</td>
-          <td class="num">${fmt.int(r.requests)}</td>
-          <td class="num">${fmt.bytes(r.bytes)}</td></tr>
-    `).join('');
+    tbody.innerHTML = a.rows.map((r, i) => {
+      const safePath = escapeHtml(r.path);
+      // Only linkify same-origin absolute paths. Reject `//host` and `/\host`
+      // (protocol-relative / backslash variant) which the browser would
+      // resolve off-origin in a new tab.
+      const linkable = r.path.length > 0
+        && r.path.charCodeAt(0) === 0x2F
+        && r.path.charCodeAt(1) !== 0x2F
+        && r.path.charCodeAt(1) !== 0x5C
+        && !r.path.endsWith('…');
+      const pathCell = linkable
+        ? `<a href="${safePath}" target="_blank" rel="noopener noreferrer">${safePath}</a>`
+        : safePath;
+      return `<tr><td>${i + 1}</td><td>${pathCell}</td>` +
+             `<td class="num">${fmt.int(r.requests)}</td>` +
+             `<td class="num">${fmt.bytes(r.bytes)}</td></tr>`;
+    }).join('');
   }
 
   function renderHealth(h) {
