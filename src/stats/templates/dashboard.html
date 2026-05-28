@@ -30,8 +30,12 @@
     .card .value { font-size: 1.4em; font-weight: 600; margin-top: 0.2em; }
     .panel { margin: 1.5em 0; }
     .panel h2 { font-size: 1em; margin: 0 0 0.5em 0; color: var(--muted); }
-    canvas { width: 100%; height: 220px; display: block;
-             border: 1px solid var(--border); border-radius: 6px; }
+    svg.chart { width: 100%; height: 220px; display: block;
+                border: 1px solid var(--border); border-radius: 6px; }
+    .chart-axis { stroke: var(--muted); stroke-width: 1; fill: none; }
+    .chart-grid { stroke: var(--border); stroke-width: 1; fill: none; }
+    .chart-tick-label { font: 11px sans-serif; fill: var(--muted); }
+    .chart-empty { font: 12px sans-serif; fill: var(--muted); text-anchor: middle; }
     .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted); }
     .legend .sw { display: inline-block; width: 0.8em; height: 0.8em;
                   margin-right: 0.2em; vertical-align: middle; }
@@ -69,7 +73,7 @@
 
   <div class="panel">
     <h2>Requests over time</h2>
-    <canvas id="chart-req"></canvas>
+    <svg id="chart-req" class="chart"></svg>
     <div class="legend">
       <span><span class="sw c2"></span>2xx</span>
       <span><span class="sw c3"></span>3xx</span>
@@ -80,7 +84,7 @@
 
   <div class="panel">
     <h2>Bytes delivered</h2>
-    <canvas id="chart-bytes"></canvas>
+    <svg id="chart-bytes" class="chart"></svg>
     <div class="legend">
       <span><span class="sw c2"></span>2xx</span>
       <span><span class="sw c3"></span>3xx</span>
@@ -127,6 +131,18 @@
     });
   }
 
+  let lastTs = null;
+  let lastTsWindow = null;
+
+  function drawCharts() {
+    if (!lastTs) return;
+    const series = [2, 3, 4, 5];
+    const reqPanel = document.querySelector('#chart-req').closest('.panel');
+    const bytesPanel = document.querySelector('#chart-bytes').closest('.panel');
+    renderChart(reqPanel, lastTs.points, 'requests', lastTsWindow, series);
+    renderChart(bytesPanel, lastTs.points, 'bytes', lastTsWindow, series);
+  }
+
   async function load() {
     setActive(document.getElementById('windows'), 'window', state.window);
     setActive(document.querySelector('.sort-controls'), 'sort', state.sort);
@@ -137,8 +153,9 @@
       fetch(`${PREFIX}/api/health`).then(r => r.json()),
     ]);
     renderCards(summary);
-    drawRequestsChart(ts);
-    drawBytesChart(ts);
+    lastTs = ts;
+    lastTsWindow = state.window;
+    drawCharts();
     renderAssets(assets);
     renderHealth(health);
   }
@@ -158,73 +175,177 @@
     `;
   }
 
-  function drawRequestsChart(ts) {
-    const canvas = document.getElementById('chart-req');
-    drawStackedAreaChart(canvas, ts.points, ['c2', 'c3', 'c4', 'c5'], 'requests');
-  }
-  function drawBytesChart(ts) {
-    const canvas = document.getElementById('chart-bytes');
-    drawStackedAreaChart(canvas, ts.points, ['c2', 'c3', 'c4', 'c5'], 'bytes');
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function niceNum(range, round) {
+    if (range <= 0) return 1;
+    const exp = Math.floor(Math.log10(range));
+    const frac = range / 10 ** exp;
+    let nice;
+    if (round) {
+      if (frac < 1.5) nice = 1;
+      else if (frac < 3) nice = 2;
+      else if (frac < 7) nice = 5;
+      else nice = 10;
+    } else {
+      if (frac <= 1) nice = 1;
+      else if (frac <= 2) nice = 2;
+      else if (frac <= 5) nice = 5;
+      else nice = 10;
+    }
+    return nice * 10 ** exp;
   }
 
-  function drawStackedAreaChart(canvas, points, series, metric) {
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvas.clientWidth * dpr;
-    canvas.height = canvas.clientHeight * dpr;
-    ctx.scale(dpr, dpr);
-    const W = canvas.clientWidth, H = canvas.clientHeight;
-    ctx.clearRect(0, 0, W, H);
-    if (!points.length) return;
-    const colors = { c2: '#38a169', c3: '#3182ce', c4: '#d69e2e', c5: '#e53e3e' };
-    const valueOf = (p, classDigit) => {
-      const m = p.by_class[classDigit];
+  function pickYTicks(max, target, integer) {
+    const t = Math.max(1, target | 0);
+    if (!isFinite(max) || max <= 0) return { step: 1, niceMax: 1, ticks: [0, 1] };
+    let step = niceNum(max / t, true);
+    if (integer && step < 1) step = 1;
+    const niceMax = Math.ceil(max / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= niceMax + 1e-9; v += step) ticks.push(v);
+    return { step, niceMax, ticks };
+  }
+
+  function pickXTickIndices(pointCount, target) {
+    if (pointCount <= 0) return [];
+    const want = Math.max(1, Math.min(target | 0, pointCount));
+    if (want === 1 || pointCount === 1) return [0];
+    const stride = (pointCount - 1) / (want - 1);
+    const out = [];
+    for (let k = 0; k < want; k++) out.push(Math.round(k * stride));
+    return out;
+  }
+
+  function formatXTickLabel(win, ts, spanCrossesYear) {
+    const d = new Date(ts * 1000);
+    if (win === '1d') {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    if (win === '7d') {
+      const wd = d.toLocaleDateString([], { weekday: 'short' });
+      const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `${wd} ${hm}`;
+    }
+    if (win === '30d') {
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+    if (win === '12m') {
+      if (spanCrossesYear) {
+        const m = d.toLocaleDateString([], { month: 'short' });
+        const y = String(d.getFullYear()).slice(-2);
+        return `${m} '${y}`;
+      }
+      return d.toLocaleDateString([], { month: 'short' });
+    }
+    return d.toISOString();
+  }
+
+  function renderChart(panelEl, points, metric, win, series) {
+    const svg = panelEl.querySelector('svg.chart');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const W = svg.clientWidth, H = svg.clientHeight;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+    if (!points.length) {
+      const t = document.createElementNS(SVG_NS, 'text');
+      t.setAttribute('class', 'chart-empty');
+      t.setAttribute('x', W / 2);
+      t.setAttribute('y', H / 2);
+      t.setAttribute('dy', '0.35em');
+      t.textContent = 'No data in this window';
+      svg.appendChild(t);
+      return;
+    }
+
+    const spanCrossesYear = points.length > 1 &&
+      new Date(points[0].ts * 1000).getFullYear() !==
+      new Date(points[points.length - 1].ts * 1000).getFullYear();
+
+    const layout = { W, H, left: 48, right: 8, top: 8, bottom: 24 };
+    layout.plotW = W - layout.left - layout.right;
+    layout.plotH = H - layout.top - layout.bottom;
+
+    const valueOf = (p, cd) => {
+      const m = p.by_class[cd];
       return (m && m[metric]) || 0;
     };
-    const totals = points.map(p => series.reduce(
-      (s, k) => s + valueOf(p, parseInt(k[1])), 0));
-    const max = Math.max(1, ...totals);
-    const xStep = (W - 40) / Math.max(1, points.length - 1);
-    series.forEach((k, si) => {
-      ctx.fillStyle = colors[k];
-      ctx.beginPath();
-      ctx.moveTo(30, H - 20);
+    const totals = points.map(p => series.reduce((s, cd) => s + valueOf(p, cd), 0));
+    const rawMax = Math.max(1, ...totals);
+    const { ticks: yTicks, niceMax: max } = pickYTicks(rawMax, 4, metric === 'requests');
+    const xStep = layout.plotW / Math.max(1, points.length - 1);
+    const xAt = i => layout.left + xStep * i;
+    const yAt = v => layout.top + layout.plotH - (v / max) * layout.plotH;
+
+    // Drawn first so areas paint on top.
+    const labelFmt = metric === 'bytes' ? fmt.bytes : fmt.int;
+    yTicks.forEach(v => {
+      const y = yAt(v);
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('class', 'chart-grid');
+      line.setAttribute('x1', layout.left);
+      line.setAttribute('x2', layout.left + layout.plotW);
+      line.setAttribute('y1', y);
+      line.setAttribute('y2', y);
+      svg.appendChild(line);
+
+      const label = document.createElementNS(SVG_NS, 'text');
+      label.setAttribute('class', 'chart-tick-label');
+      label.setAttribute('x', layout.left - 6);
+      label.setAttribute('y', y + 4);
+      label.setAttribute('text-anchor', 'end');
+      label.textContent = labelFmt(v);
+      svg.appendChild(label);
+    });
+
+    series.forEach((cd, si) => {
+      const path = document.createElementNS(SVG_NS, 'path');
+      let d = '';
       points.forEach((p, i) => {
         let stack = 0;
-        for (let j = 0; j <= si; j++) {
-          stack += valueOf(p, parseInt(series[j][1]));
-        }
-        const x = 30 + xStep * i;
-        const y = H - 20 - (stack / max) * (H - 30);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        for (let j = 0; j <= si; j++) stack += valueOf(p, series[j]);
+        d += (i === 0 ? 'M' : 'L') + xAt(i) + ',' + yAt(stack);
       });
       for (let i = points.length - 1; i >= 0; i--) {
         let stack = 0;
-        for (let j = 0; j < si; j++) {
-          stack += valueOf(points[i], parseInt(series[j][1]));
-        }
-        const x = 30 + xStep * i;
-        const y = H - 20 - (stack / max) * (H - 30);
-        ctx.lineTo(x, y);
+        for (let j = 0; j < si; j++) stack += valueOf(points[i], series[j]);
+        d += 'L' + xAt(i) + ',' + yAt(stack);
       }
-      ctx.closePath();
-      ctx.fill();
+      d += 'Z';
+      path.setAttribute('d', d);
+      path.setAttribute('fill', `var(--c${cd})`);
+      svg.appendChild(path);
     });
-    drawAxes(ctx, W, H, metric === 'bytes' ? fmt.bytes(max) : fmt.int(max));
-  }
 
-  function drawAxes(ctx, W, H, maxLabel) {
-    ctx.strokeStyle = '#888';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(30, 5);
-    ctx.lineTo(30, H - 20);
-    ctx.lineTo(W - 5, H - 20);
-    ctx.stroke();
-    ctx.fillStyle = '#888';
-    ctx.font = '11px sans-serif';
-    ctx.fillText(String(maxLabel), 2, 12);
-    ctx.fillText('0', 12, H - 22);
+    const xAxisY = layout.top + layout.plotH;
+    const axisLine = document.createElementNS(SVG_NS, 'line');
+    axisLine.setAttribute('class', 'chart-axis');
+    axisLine.setAttribute('x1', layout.left);
+    axisLine.setAttribute('x2', layout.left + layout.plotW);
+    axisLine.setAttribute('y1', xAxisY);
+    axisLine.setAttribute('y2', xAxisY);
+    svg.appendChild(axisLine);
+
+    const xTickIdx = pickXTickIndices(points.length, 6);
+    xTickIdx.forEach(i => {
+      const x = xAt(i);
+      const tick = document.createElementNS(SVG_NS, 'line');
+      tick.setAttribute('class', 'chart-axis');
+      tick.setAttribute('x1', x);
+      tick.setAttribute('x2', x);
+      tick.setAttribute('y1', xAxisY);
+      tick.setAttribute('y2', xAxisY + 4);
+      svg.appendChild(tick);
+
+      const label = document.createElementNS(SVG_NS, 'text');
+      label.setAttribute('class', 'chart-tick-label');
+      label.setAttribute('x', x);
+      label.setAttribute('y', xAxisY + 16);
+      label.setAttribute('text-anchor', 'middle');
+      label.textContent = formatXTickLabel(win, points[i].ts, spanCrossesYear);
+      svg.appendChild(label);
+    });
   }
 
   function renderAssets(a) {
@@ -273,6 +394,20 @@
     }
   });
   window.addEventListener('load', load);
+
+  let chartRafPending = false;
+  function scheduleChartRedraw() {
+    if (chartRafPending) return;
+    chartRafPending = true;
+    requestAnimationFrame(() => {
+      chartRafPending = false;
+      drawCharts();
+    });
+  }
+  window.addEventListener('resize', scheduleChartRedraw);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleChartRedraw();
+  });
   </script>
 </body>
 </html>
