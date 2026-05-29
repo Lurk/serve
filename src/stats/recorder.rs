@@ -37,6 +37,8 @@ pub fn canonicalize_path(input: &str) -> SmolStr {
     }
     let mut out = String::with_capacity(cut + 3);
     out.push_str(&no_query[..cut]);
+    // The dashboard's renderAssets JS detects truncation by checking
+    // `path.endsWith('…')`; changing this sentinel requires updating it too.
     out.push('…');
     SmolStr::new(out)
 }
