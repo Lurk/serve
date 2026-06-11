@@ -25,6 +25,8 @@ pub struct StatsState {
     pub writer: WriterHandle,
     pub session_ttl_days: u32,
     pub secure_cookies: bool,
+    /// Whether a `GeoIP` database is loaded — gates the `/api/countries` payload.
+    pub geo_enabled: bool,
     /// Validated URL prefix the dashboard mounts under (no trailing slash).
     pub url_prefix: Arc<str>,
 }
@@ -69,6 +71,7 @@ pub fn router(state: StatsState) -> axum::Router {
         .route(&format!("{p}/logout"), post(login::post_logout))
         .route(&format!("{p}/api/timeseries"), get(api::get_timeseries))
         .route(&format!("{p}/api/assets"), get(api::get_assets))
+        .route(&format!("{p}/api/countries"), get(api::get_countries))
         .route(&format!("{p}/api/summary"), get(api::get_summary))
         .route(&format!("{p}/api/health"), get(api::get_health))
         .with_state(state)

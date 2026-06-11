@@ -62,6 +62,12 @@
     .sw.c1 { background: var(--c1); } .sw.c2 { background: var(--c2); }
     .sw.c3 { background: var(--c3); } .sw.c4 { background: var(--c4); }
     .sw.c5 { background: var(--c5); }
+    .cbar { display: flex; height: 0.8em; width: 100%; min-width: 80px;
+            border-radius: 3px; overflow: hidden; background: var(--border); }
+    .cbar span { display: block; height: 100%; }
+    .cbar .c1 { background: var(--c1); } .cbar .c2 { background: var(--c2); }
+    .cbar .c3 { background: var(--c3); } .cbar .c4 { background: var(--c4); }
+    .cbar .c5 { background: var(--c5); }
     table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     th, td { padding: 0.4em 0.6em; text-align: left;
              border-bottom: 1px solid var(--border); }
@@ -123,6 +129,20 @@
     </tr></thead><tbody></tbody></table>
   </div>
 
+  <div class="panel" id="countries-panel" hidden>
+    <h2>Top 30 countries
+      <span class="sort-controls" id="country-sort">
+        Sort by:
+        <button data-csort="bytes">bytes</button>
+        <button data-csort="requests">requests</button>
+      </span>
+    </h2>
+    <table id="countries"><thead><tr>
+      <th>#</th><th>Country</th><th class="num">Requests</th>
+      <th class="num">Bytes</th><th>By class</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
   <footer id="health"></footer>
 
   <script>
@@ -140,6 +160,7 @@
   const state = {
     window: localStorage.getItem('stats:window') || '1d',
     sort: localStorage.getItem('stats:sort') || 'bytes',
+    csort: localStorage.getItem('stats:csort') || 'bytes',
   };
 
   function setActive(group, attr, value) {
@@ -179,10 +200,12 @@
   async function load() {
     setActive(document.getElementById('windows'), 'window', state.window);
     setActive(document.querySelector('.sort-controls'), 'sort', state.sort);
-    const [summary, ts, assets, health] = await Promise.all([
+    setActive(document.querySelector('#country-sort'), 'csort', state.csort);
+    const [summary, ts, assets, countries, health] = await Promise.all([
       fetch(`${PREFIX}/api/summary?window=${state.window}`).then(r => r.json()),
       fetch(`${PREFIX}/api/timeseries?window=${state.window}`).then(r => r.json()),
       fetch(`${PREFIX}/api/assets?window=${state.window}&sort=${state.sort}`).then(r => r.json()),
+      fetch(`${PREFIX}/api/countries?window=${state.window}&sort=${state.csort}`).then(r => r.json()),
       fetch(`${PREFIX}/api/health`).then(r => r.json()),
     ]);
     renderCards(summary);
@@ -190,6 +213,7 @@
     lastTsWindow = state.window;
     drawCharts();
     renderAssets(assets);
+    renderCountries(countries);
     renderHealth(health);
   }
 
@@ -468,6 +492,46 @@
     };
   }
 
+  let regionNames = null;
+  try { regionNames = new Intl.DisplayNames(['en'], { type: 'region' }); } catch (e) {}
+
+  function countryName(cc) {
+    if (cc === 'ZZ') return 'Unknown';
+    if (regionNames) { try { return regionNames.of(cc) || cc; } catch (e) {} }
+    return cc;
+  }
+  function flagEmoji(cc) {
+    if (cc.length !== 2 || cc === 'ZZ') return '';
+    const cp = [...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65);
+    return String.fromCodePoint(...cp) + ' ';
+  }
+  function classBar(byClass) {
+    const total = CLASS_DIGITS.reduce((a, cd) =>
+      a + ((byClass[cd] && byClass[cd].requests) || 0), 0);
+    if (total <= 0) return '<div class="cbar"></div>';
+    const segs = CLASS_DIGITS.map(cd => {
+      const r = (byClass[cd] && byClass[cd].requests) || 0;
+      if (r <= 0) return '';
+      const pct = (r / total * 100).toFixed(2);
+      return `<span class="c${cd}" style="width:${pct}%" title="${cd}xx: ${fmt.int(r)}"></span>`;
+    }).join('');
+    return `<div class="cbar">${segs}</div>`;
+  }
+
+  function renderCountries(c) {
+    const panel = document.getElementById('countries-panel');
+    if (!c.enabled) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const tbody = document.querySelector('#countries tbody');
+    tbody.innerHTML = c.rows.map((r, i) => {
+      const name = escapeHtml(`${flagEmoji(r.country)}${countryName(r.country)}`);
+      return `<tr><td>${i + 1}</td><td>${name}</td>` +
+             `<td class="num">${fmt.int(r.requests)}</td>` +
+             `<td class="num">${fmt.bytes(r.bytes)}</td>` +
+             `<td>${classBar(r.by_class)}</td></tr>`;
+    }).join('');
+  }
+
   function renderAssets(a) {
     const tbody = document.querySelector('#assets tbody');
     tbody.innerHTML = a.rows.map((r, i) => {
@@ -522,6 +586,13 @@
     if (e.target.dataset.sort) {
       state.sort = e.target.dataset.sort;
       localStorage.setItem('stats:sort', state.sort);
+      load();
+    }
+  });
+  document.querySelector('#country-sort').addEventListener('click', e => {
+    if (e.target.dataset.csort) {
+      state.csort = e.target.dataset.csort;
+      localStorage.setItem('stats:csort', state.csort);
       load();
     }
   });

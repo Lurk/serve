@@ -3,6 +3,7 @@ use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use smol_str::SmolStr;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +17,8 @@ pub struct StatEvent {
     pub path: SmolStr,
     pub status_class: u8,
     pub bytes: u64,
+    /// Resolved client country (ISO alpha-2), or `None` when geo is disabled.
+    pub country: Option<SmolStr>,
 }
 
 pub const MAX_PATH_BYTES: usize = 512;
@@ -67,6 +70,10 @@ pub struct RecorderHandle {
     /// Requests whose path starts with this prefix are not recorded — the
     /// dashboard would otherwise show itself as the busiest asset.
     skip_prefix: Arc<str>,
+    /// Resolves client IPs to country codes. `None` disables country capture.
+    geo: Option<Arc<dyn crate::stats::geo::CountryResolver>>,
+    /// Trust `X-Forwarded-For` for the client IP (see config).
+    trust_forwarded_for: bool,
 }
 
 impl RecorderHandle {
@@ -81,12 +88,80 @@ impl RecorderHandle {
             dropped: Arc::new(AtomicU64::new(0)),
             clock,
             skip_prefix,
+            geo: None,
+            trust_forwarded_for: false,
         }
     }
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    /// Attach a country resolver and the forwarded-for trust flag. Returns
+    /// `self` so it chains after `new`.
+    #[must_use]
+    pub fn with_geo(
+        mut self,
+        geo: Option<Arc<dyn crate::stats::geo::CountryResolver>>,
+        trust_forwarded_for: bool,
+    ) -> Self {
+        self.geo = geo;
+        self.trust_forwarded_for = trust_forwarded_for;
+        self
+    }
+
+    /// Resolve the request's client country, or `None` when geo is disabled.
+    fn resolve_country<B>(&self, req: &Request<B>) -> Option<SmolStr> {
+        let geo = self.geo.as_ref()?;
+        let ip = self.client_ip(req)?;
+        Some(geo.country_code(ip))
+    }
+
+    /// Pick the client IP: the right-most `X-Forwarded-For` entry when trusted,
+    /// otherwise the socket peer from `ConnectInfo`.
+    ///
+    /// Proxies *append* the address they received the connection from, so the
+    /// right-most entry is the one our own trusted proxy observed — the only
+    /// value a client cannot spoof by sending its own `X-Forwarded-For`. We scan
+    /// every `x-forwarded-for` header (the value may be split across lines) and
+    /// take the *right-most* entry, then parse it. We anchor on that last token
+    /// and do NOT skip to an earlier entry when it fails to parse — otherwise a
+    /// proxy that appends an unparseable token (e.g. an `ip:port` pair) would
+    /// hand selection to a client-controlled entry, defeating the trust model.
+    /// On a malformed right-most token we fall back to the socket peer instead.
+    /// This assumes exactly one trusted proxy directly in front of `serve`.
+    fn client_ip<B>(&self, req: &Request<B>) -> Option<IpAddr> {
+        if self.trust_forwarded_for {
+            let rightmost = req
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .flat_map(|s| s.split(','))
+                .map(str::trim)
+                .rfind(|s| !s.is_empty());
+            if let Some(token) = rightmost
+                && let Some(ip) = parse_forwarded_addr(token)
+            {
+                return Some(ip);
+            }
+            // No XFF entry, or the trusted right-most token is unparseable: fall
+            // through to the socket peer rather than an earlier, spoofable entry.
+        }
+        req.extensions()
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip())
+    }
+}
+
+/// Parse a single `X-Forwarded-For` token, which may be a bare IP (`1.2.3.4`,
+/// `2001:db8::1`) or carry a port (`1.2.3.4:443`, `[2001:db8::1]:443`). Returns
+/// the address, or `None` if the token is not an IP at all.
+fn parse_forwarded_addr(s: &str) -> Option<IpAddr> {
+    if let Ok(ip) = s.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    s.parse::<SocketAddr>().ok().map(|sa| sa.ip())
 }
 
 #[derive(Clone)]
@@ -214,6 +289,11 @@ where
             .uri()
             .path()
             .starts_with(self.handle.skip_prefix.as_ref());
+        let country = if skip {
+            None
+        } else {
+            self.handle.resolve_country(&req)
+        };
         let handle = self.handle.clone();
         let fut = self.inner.call(req);
 
@@ -231,6 +311,7 @@ where
                         path,
                         status_class,
                         bytes,
+                        country,
                     };
                     match handle.tx.try_send(event) {
                         Ok(()) => {}
@@ -310,10 +391,12 @@ mod tests {
     }
 
     use crate::stats::clock::MockClock;
+    use crate::stats::geo::CountryResolver;
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::response::Redirect;
+    use std::net::{IpAddr, SocketAddr};
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -433,6 +516,7 @@ mod tests {
             path: "x".into(),
             status_class: 2,
             bytes: 0,
+            country: None,
         })
         .unwrap();
         let handle = RecorderHandle::new(tx.clone(), clock, Arc::from("/__stats__"));
@@ -442,5 +526,142 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         let _ = drain(resp).await;
         assert_eq!(handle.dropped(), 1);
+    }
+
+    struct FakeGeo;
+    impl CountryResolver for FakeGeo {
+        fn country_code(&self, ip: IpAddr) -> SmolStr {
+            // Map a sentinel test IP to "US"; everything else "ZZ".
+            if ip == "203.0.113.5".parse::<IpAddr>().unwrap() {
+                SmolStr::new("US")
+            } else {
+                SmolStr::new("ZZ")
+            }
+        }
+    }
+
+    fn conn_info_req(uri: &str, ip: &str) -> Request<Body> {
+        let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let addr: SocketAddr = format!("{ip}:40000").parse().unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(addr));
+        req
+    }
+
+    #[tokio::test]
+    async fn records_country_from_peer_ip() {
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), false);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+
+        let resp = app
+            .oneshot(conn_info_req("/200", "203.0.113.5"))
+            .await
+            .unwrap();
+        let _ = drain(resp).await;
+        let ev = rx.recv().await.unwrap();
+        assert_eq!(ev.country.as_deref(), Some("US"));
+    }
+
+    #[tokio::test]
+    async fn xff_used_only_when_trusted() {
+        // trust=false: header ignored, peer IP (sentinel) wins -> US.
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), false);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let mut req = conn_info_req("/200", "203.0.113.5");
+        req.headers_mut()
+            .insert("x-forwarded-for", "8.8.8.8".parse().unwrap());
+        let _ = drain(app.oneshot(req).await.unwrap()).await;
+        assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
+
+        // trust=true: the RIGHT-most XFF entry wins (the address our trusted
+        // proxy appended), not the client-supplied left-most one. Sentinel is
+        // right-most -> US, even though both the left-most entry and the socket
+        // peer map to ZZ.
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), true);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let mut req = conn_info_req("/200", "9.9.9.9");
+        req.headers_mut()
+            .insert("x-forwarded-for", "8.8.8.8, 203.0.113.5".parse().unwrap());
+        let _ = drain(app.oneshot(req).await.unwrap()).await;
+        assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
+    }
+
+    #[tokio::test]
+    async fn xff_rightmost_spans_multiple_headers() {
+        // The value may arrive as several header lines; the right-most entry of
+        // the last line is the one the trusted proxy observed.
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), true);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let mut req = conn_info_req("/200", "9.9.9.9");
+        req.headers_mut()
+            .append("x-forwarded-for", "1.1.1.1, 8.8.8.8".parse().unwrap());
+        req.headers_mut()
+            .append("x-forwarded-for", "203.0.113.5".parse().unwrap());
+        let _ = drain(app.oneshot(req).await.unwrap()).await;
+        assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
+    }
+
+    #[tokio::test]
+    async fn no_country_when_geo_disabled() {
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"));
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let _ = drain(
+            app.oneshot(conn_info_req("/200", "203.0.113.5"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rx.recv().await.unwrap().country, None);
+    }
+
+    #[tokio::test]
+    async fn malformed_xff_falls_back_to_peer_when_trusted() {
+        // trust=true but the forwarded header is not a valid IP: the resolver
+        // must fall back to the socket peer (sentinel) rather than yield None.
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), true);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let mut req = conn_info_req("/200", "203.0.113.5");
+        req.headers_mut()
+            .insert("x-forwarded-for", "not-an-ip".parse().unwrap());
+        let _ = drain(app.oneshot(req).await.unwrap()).await;
+        assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
+    }
+
+    #[tokio::test]
+    async fn xff_rightmost_with_port_is_parsed_not_skipped() {
+        // trust=true and the trusted proxy appends the observed peer WITH a port.
+        // The right-most token must be parsed (port stripped) and win; it must
+        // NOT be discarded in favor of the earlier, client-controlled entry.
+        let clock = Arc::new(MockClock::new(0));
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(16);
+        let handle = RecorderHandle::new(tx, clock, Arc::from("/__stats__"))
+            .with_geo(Some(Arc::new(FakeGeo)), true);
+        let app = echo_router().layer(StatsRecorderLayer::new(handle));
+        let mut req = conn_info_req("/200", "9.9.9.9"); // socket peer -> ZZ
+        // Left entry is client-supplied (-> ZZ); right-most is the sentinel the
+        // proxy appended, carrying a port.
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            "8.8.8.8, 203.0.113.5:50000".parse().unwrap(),
+        );
+        let _ = drain(app.oneshot(req).await.unwrap()).await;
+        assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
     }
 }

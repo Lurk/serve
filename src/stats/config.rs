@@ -17,6 +17,17 @@ pub struct StatsConfig {
     /// Must start with `/`, must not end with `/`, must not contain `//` or `..`.
     #[serde(default)]
     pub url_prefix: Option<String>,
+    /// Path to a `GeoIP` `.mmdb` country database. When set and readable, the
+    /// dashboard gains a per-country breakdown. Any MaxMind-format country DB
+    /// works (`MaxMind` `GeoLite2`, `DB-IP` Lite, `IPinfo`). When `None`, country
+    /// stats are disabled.
+    #[serde(default)]
+    pub geoip_db_path: Option<PathBuf>,
+    /// When `true`, geolocate the right-most `X-Forwarded-For` entry instead of
+    /// the socket peer IP. Enable this only when a trusted proxy sets the
+    /// header — otherwise clients can spoof their country. Defaults to `false`.
+    #[serde(default)]
+    pub trust_forwarded_for: bool,
 }
 
 const fn default_session_ttl() -> u32 {
@@ -85,6 +96,28 @@ mod tests {
         "#;
         let cfg: StatsConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.url_prefix.as_deref(), Some("/admin/stats"));
+    }
+
+    #[test]
+    fn parses_geoip_and_trust_forwarded_for() {
+        let toml = r#"
+            db_path = "/tmp/x.db"
+            geoip_db_path = "/etc/serve/GeoLite2-Country.mmdb"
+            trust_forwarded_for = true
+        "#;
+        let cfg: StatsConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.geoip_db_path,
+            Some(PathBuf::from("/etc/serve/GeoLite2-Country.mmdb"))
+        );
+        assert!(cfg.trust_forwarded_for);
+    }
+
+    #[test]
+    fn geoip_defaults_absent_and_trust_false() {
+        let cfg: StatsConfig = toml::from_str(r#"db_path = "/tmp/x.db""#).unwrap();
+        assert_eq!(cfg.geoip_db_path, None);
+        assert!(!cfg.trust_forwarded_for);
     }
 
     #[test]

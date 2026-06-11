@@ -1,6 +1,6 @@
 use crate::errors::ServeError;
 use crate::stats::clock::Clock;
-use crate::stats::store::Store;
+use crate::stats::store::{BucketTable, Dimension, Store};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -32,12 +32,14 @@ impl RollupTask {
         let now = self.clock.now();
         self.do_hour_rollups(now)?;
         self.do_day_rollups(now)?;
-        self.store
-            .prune_bucket_minute_before(now - RETENTION_MINUTE_SECS)?;
-        self.store
-            .prune_bucket_hour_before(now - RETENTION_HOUR_SECS)?;
-        self.store
-            .prune_bucket_day_before(now - RETENTION_DAY_SECS)?;
+        for dim in Dimension::ALL {
+            self.store
+                .prune_before(dim, BucketTable::Minute, now - RETENTION_MINUTE_SECS)?;
+            self.store
+                .prune_before(dim, BucketTable::Hour, now - RETENTION_HOUR_SECS)?;
+            self.store
+                .prune_before(dim, BucketTable::Day, now - RETENTION_DAY_SECS)?;
+        }
         self.store.prune_expired_sessions(now)?;
         Ok(())
     }
@@ -56,7 +58,10 @@ impl RollupTask {
         let start = last + 3600;
         let mut h = start;
         while h <= last_complete_hour {
-            self.store.rollup_hour(h, h + 3600)?;
+            for dim in Dimension::ALL {
+                self.store
+                    .rollup(dim, BucketTable::Minute, BucketTable::Hour, h, h + 3600)?;
+            }
             self.store.meta_set("last_hour_rollup_ts", &h.to_string())?;
             h += 3600;
         }
@@ -77,7 +82,10 @@ impl RollupTask {
         let start = last + 86_400;
         let mut d = start;
         while d <= last_complete_day {
-            self.store.rollup_day(d, d + 86_400)?;
+            for dim in Dimension::ALL {
+                self.store
+                    .rollup(dim, BucketTable::Hour, BucketTable::Day, d, d + 86_400)?;
+            }
             self.store.meta_set("last_day_rollup_ts", &d.to_string())?;
             d += 86_400;
         }
@@ -113,7 +121,7 @@ impl RollupTask {
         }
         let seed = self
             .store
-            .min_bucket_ts(source)?
+            .min_ts(Dimension::Path, source)?
             .map_or(last_complete_bucket, |min_ts| {
                 (min_ts / bucket_secs) * bucket_secs - bucket_secs
             });
@@ -150,7 +158,7 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::stats::clock::MockClock;
-    use crate::stats::store::{BucketTable, TopMetric};
+    use crate::stats::store::{BucketTable, Dimension, TopMetric};
     use tempfile::tempdir;
 
     fn setup() -> (Arc<Store>, Arc<MockClock>, tempfile::TempDir) {
@@ -164,10 +172,13 @@ mod tests {
     fn tick_prunes_old_minute_buckets() {
         let (store, clock, _dir) = setup();
         store
-            .upsert_bucket_minute(&[
-                (60, "/a".into(), 2, 1, 1),
-                (1_000_000, "/a".into(), 2, 1, 1),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (60, "/a".into(), 2, 1, 1),
+                    (1_000_000, "/a".into(), 2, 1, 1),
+                ],
+            )
             .unwrap();
         clock.set(1_000_000 + 100);
         let shutdown = CancellationToken::new();
@@ -196,7 +207,10 @@ mod tests {
     fn tick_runs_hour_rollup_idempotent() {
         let (store, clock, _dir) = setup();
         store
-            .upsert_bucket_minute(&[(3600, "/a".into(), 2, 5, 50), (4200, "/a".into(), 2, 2, 20)])
+            .upsert_minute(
+                Dimension::Path,
+                &[(3600, "/a".into(), 2, 5, 50), (4200, "/a".into(), 2, 2, 20)],
+            )
             .unwrap();
         clock.set(7500);
         let shutdown = CancellationToken::new();
@@ -231,14 +245,48 @@ mod tests {
     }
 
     #[test]
+    fn tick_rolls_up_and_prunes_country_buckets() {
+        let (store, clock, _dir) = setup();
+        // Path rows drive the shared rollup cursor; in production every request
+        // writes a path bucket alongside its (optional) country bucket, so the
+        // path cursor always covers the country data.
+        store
+            .upsert_minute(
+                Dimension::Path,
+                &[(3600, "/a".into(), 2, 5, 50), (4200, "/a".into(), 2, 2, 20)],
+            )
+            .unwrap();
+        // A recent hour's minute rows that should roll up.
+        store
+            .upsert_minute(
+                Dimension::Country,
+                &[(3600, "US".into(), 2, 5, 50), (4200, "US".into(), 2, 2, 20)],
+            )
+            .unwrap();
+        clock.set(7500);
+        let task = RollupTask::new(store.clone(), clock, CancellationToken::new());
+        task.tick().unwrap();
+
+        let hour = store
+            .country_breakdown(crate::stats::store::BucketTable::Hour, 0)
+            .unwrap();
+        let us = hour.iter().find(|r| r.country == "US").unwrap();
+        assert_eq!(us.requests, 7);
+        assert_eq!(us.bytes, 70);
+    }
+
+    #[test]
     fn tick_backfills_multiple_hours() {
         let (store, clock, _dir) = setup();
         store
-            .upsert_bucket_minute(&[
-                (3600, "/a".into(), 2, 1, 1),
-                (7200, "/a".into(), 2, 1, 1),
-                (10800, "/a".into(), 2, 1, 1),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (3600, "/a".into(), 2, 1, 1),
+                    (7200, "/a".into(), 2, 1, 1),
+                    (10800, "/a".into(), 2, 1, 1),
+                ],
+            )
             .unwrap();
         clock.set(14_500);
         let task = RollupTask::new(store.clone(), clock, CancellationToken::new());

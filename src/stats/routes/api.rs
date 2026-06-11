@@ -80,6 +80,21 @@ pub struct ClassMetric {
 }
 
 #[derive(Serialize)]
+pub struct CountryRow {
+    pub country: String,
+    pub requests: i64,
+    pub bytes: i64,
+    pub by_class: std::collections::HashMap<u8, ClassMetric>,
+}
+
+#[derive(Serialize)]
+pub struct CountriesResponse {
+    pub window: String,
+    pub enabled: bool,
+    pub rows: Vec<CountryRow>,
+}
+
+#[derive(Serialize)]
 pub struct AssetsResponse {
     pub window: String,
     pub rows: Vec<crate::stats::store::AssetRow>,
@@ -179,6 +194,70 @@ pub async fn get_assets(
     .into_response()
 }
 
+pub async fn get_countries(
+    _s: Session,
+    State(st): State<StatsState>,
+    Query(q): Query<WindowQuery>,
+) -> Response {
+    let Some(win) = Window::from_query(&q.window) else {
+        return (StatusCode::BAD_REQUEST, "invalid window").into_response();
+    };
+    if !st.geo_enabled {
+        return Json(CountriesResponse {
+            window: q.window,
+            enabled: false,
+            rows: Vec::new(),
+        })
+        .into_response();
+    }
+    // Default to bytes when `sort` is absent/unrecognized, matching get_assets.
+    let by_requests = matches!(q.sort.as_deref(), Some("requests"));
+    let since = st.clock.now() - win.since_seconds();
+    let table = win.bucket_table();
+    let breakdown = match db(st.store.clone(), move |s| s.country_breakdown(table, since)).await {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    };
+
+    // Group flat (country, class) rows into per-country totals + class map.
+    let mut acc: std::collections::HashMap<String, CountryRow> = std::collections::HashMap::new();
+    for r in breakdown {
+        let row = acc.entry(r.country.clone()).or_insert_with(|| CountryRow {
+            country: r.country.clone(),
+            requests: 0,
+            bytes: 0,
+            by_class: std::collections::HashMap::new(),
+        });
+        row.requests = row.requests.saturating_add(r.requests);
+        row.bytes = row.bytes.saturating_add(r.bytes);
+        row.by_class.insert(
+            r.status_class,
+            ClassMetric {
+                requests: r.requests,
+                bytes: r.bytes,
+            },
+        );
+    }
+    let mut rows: Vec<CountryRow> = acc.into_values().collect();
+    rows.sort_by(|a, b| {
+        let key = if by_requests {
+            b.requests.cmp(&a.requests)
+        } else {
+            b.bytes.cmp(&a.bytes)
+        };
+        // Stable tiebreak so equal counts order deterministically.
+        key.then_with(|| a.country.cmp(&b.country))
+    });
+    rows.truncate(30);
+
+    Json(CountriesResponse {
+        window: q.window,
+        enabled: true,
+        rows,
+    })
+    .into_response()
+}
+
 pub async fn get_summary(
     _s: Session,
     State(st): State<StatsState>,
@@ -248,6 +327,7 @@ mod tests {
     use super::super::test_support::{body_string, full_app, test_state};
     use super::*;
     use crate::stats::auth::hash_password;
+    use crate::stats::store::Dimension;
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -273,6 +353,7 @@ mod tests {
             "/__stats__/api/summary?window=1d",
             "/__stats__/api/timeseries?window=1d",
             "/__stats__/api/assets?window=1d",
+            "/__stats__/api/countries?window=1d",
         ] {
             let resp = app
                 .clone()
@@ -312,10 +393,13 @@ mod tests {
             .unwrap();
         st.store.create_session("tok", 0, 9_999_999_999).unwrap();
         st.store
-            .upsert_bucket_minute(&[
-                (1_700_000_000 - 60, "/a".into(), 2, 3, 300),
-                (1_700_000_000 - 60, "/b".into(), 4, 2, 42),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (1_700_000_000 - 60, "/a".into(), 2, 3, 300),
+                    (1_700_000_000 - 60, "/b".into(), 4, 2, 42),
+                ],
+            )
             .unwrap();
         let app = full_app(st);
         let resp = app
@@ -339,5 +423,67 @@ mod tests {
             .expect("4xx entry");
         assert_eq!(class4["requests"], 2);
         assert_eq!(class4["bytes"], 42);
+    }
+
+    #[tokio::test]
+    async fn api_countries_disabled_when_no_geo() {
+        let st = test_state(false);
+        st.store
+            .set_password_hash(&hash_password("rightpassword1").unwrap(), 0)
+            .unwrap();
+        st.store.create_session("tok", 0, 9_999_999_999).unwrap();
+        let app = full_app(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__stats__/api/countries?window=1d")
+                    .header("cookie", "stats_session=tok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(body["enabled"], false);
+        assert!(body["rows"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_countries_ranks_and_breaks_down_by_class() {
+        let mut st = test_state(false);
+        st.geo_enabled = true;
+        st.store
+            .set_password_hash(&hash_password("rightpassword1").unwrap(), 0)
+            .unwrap();
+        st.store.create_session("tok", 0, 9_999_999_999).unwrap();
+        st.store
+            .upsert_minute(
+                Dimension::Country,
+                &[
+                    (1_700_000_000 - 60, "US".into(), 2, 10, 1000),
+                    (1_700_000_000 - 60, "US".into(), 4, 2, 20),
+                    (1_700_000_000 - 60, "DE".into(), 2, 3, 300),
+                ],
+            )
+            .unwrap();
+        let app = full_app(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__stats__/api/countries?window=1d&sort=requests")
+                    .header("cookie", "stats_session=tok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(body["enabled"], true);
+        let rows = body["rows"].as_array().unwrap();
+        assert_eq!(rows[0]["country"], "US");
+        assert_eq!(rows[0]["requests"], 12);
+        assert_eq!(rows[0]["bytes"], 1020);
+        assert_eq!(rows[0]["by_class"]["4"]["requests"], 2);
+        assert_eq!(rows[1]["country"], "DE");
     }
 }
