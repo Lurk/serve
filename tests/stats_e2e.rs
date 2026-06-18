@@ -13,6 +13,10 @@ fn build_app_for_test(
 }
 
 fn client() -> reqwest::Client {
+    // reqwest uses rustls with `rustls-no-provider`, so the process-wide rustls
+    // crypto provider must be installed before building a client. Idempotent:
+    // ignore the error returned when a default is already set.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .cookie_store(true)
         .redirect(reqwest::redirect::Policy::none())
@@ -42,6 +46,8 @@ async fn e2e_recording_round_trip() {
         session_ttl_days: 30,
         secure_cookies: None,
         url_prefix: None,
+        geoip_db_path: None,
+        trust_forwarded_for: false,
     };
     let stats = serve::stats::StatsHandle::start(&stats_cfg, false)
         .await
@@ -112,6 +118,8 @@ async fn e2e_login_dashboard_excludes_stats_paths() {
         session_ttl_days: 30,
         secure_cookies: None,
         url_prefix: None,
+        geoip_db_path: None,
+        trust_forwarded_for: false,
     };
     let stats = serve::stats::StatsHandle::start(&stats_cfg, false)
         .await
@@ -205,6 +213,8 @@ async fn e2e_restart_preserves_recorded_data() {
             session_ttl_days: 30,
             secure_cookies: None,
             url_prefix: None,
+            geoip_db_path: None,
+            trust_forwarded_for: false,
         };
         let stats = serve::stats::StatsHandle::start(&stats_cfg, false)
             .await
@@ -255,6 +265,8 @@ async fn e2e_custom_url_prefix_skips_and_serves() {
         session_ttl_days: 30,
         secure_cookies: None,
         url_prefix: Some("/admin/stats".into()),
+        geoip_db_path: None,
+        trust_forwarded_for: false,
     };
     let stats = serve::stats::StatsHandle::start(&stats_cfg, false)
         .await

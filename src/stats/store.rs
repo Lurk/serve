@@ -11,6 +11,14 @@ pub struct AssetRow {
     pub bytes: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CountryClassRow {
+    pub country: String,
+    pub status_class: u8,
+    pub requests: i64,
+    pub bytes: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BucketTable {
     Minute,
@@ -18,12 +26,37 @@ pub enum BucketTable {
     Day,
 }
 
-impl BucketTable {
-    const fn as_str(self) -> &'static str {
+/// A stats breakdown dimension (path or country). Both share the same pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimension {
+    Path,
+    Country,
+}
+
+impl Dimension {
+    /// All dimensions, so writer/rollup/prune can iterate instead of repeating
+    /// per-dimension calls. Adding a dimension is a one-line change here.
+    pub const ALL: [Self; 2] = [Self::Path, Self::Country];
+
+    /// Physical table backing this dimension at the given granularity.
+    /// Names are compile-time literals from a closed enum, so callers may safely
+    /// interpolate them into SQL.
+    const fn table(self, granularity: BucketTable) -> &'static str {
+        match (self, granularity) {
+            (Self::Path, BucketTable::Minute) => "bucket_minute",
+            (Self::Path, BucketTable::Hour) => "bucket_hour",
+            (Self::Path, BucketTable::Day) => "bucket_day",
+            (Self::Country, BucketTable::Minute) => "country_minute",
+            (Self::Country, BucketTable::Hour) => "country_hour",
+            (Self::Country, BucketTable::Day) => "country_day",
+        }
+    }
+
+    /// SQL key column name for this dimension.
+    const fn key_column(self) -> &'static str {
         match self {
-            Self::Minute => "bucket_minute",
-            Self::Hour => "bucket_hour",
-            Self::Day => "bucket_day",
+            Self::Path => "path",
+            Self::Country => "country",
         }
     }
 }
@@ -249,106 +282,77 @@ impl Store {
         Ok(n)
     }
 
-    /// Aggregate `bucket_minute` rows for the hour `[hour_start, hour_end)` into `bucket_hour`.
+    /// Aggregate `src`-granularity rows in `[start, end)` into the `dst`-granularity
+    /// table for dimension `dim`. Idempotent: re-running overwrites the destination
+    /// bucket with a fresh SUM.
     ///
     /// # Errors
-    /// Returns error if any `SQLite` statement during the rollup fails.
+    /// Returns error if the `SQLite` statement fails.
     ///
     /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn rollup_hour(&self, hour_start: i64, hour_end: i64) -> Result<(), ServeError> {
-        let conn = self.pool.get().expect("get db connection from pool");
-        conn.execute(
-            "INSERT INTO bucket_hour (ts, path, status_class, requests, bytes)
-             SELECT ?1 AS hour_ts, path, status_class, SUM(requests), SUM(bytes)
-             FROM bucket_minute
+    /// Panics if the pool cannot hand out a connection.
+    pub fn rollup(
+        &self,
+        dim: Dimension,
+        src: BucketTable,
+        dst: BucketTable,
+        start: i64,
+        end: i64,
+    ) -> Result<(), ServeError> {
+        let key = dim.key_column();
+        let sql = format!(
+            "INSERT INTO {dst_tbl} (ts, {key}, status_class, requests, bytes)
+             SELECT ?1, {key}, status_class, SUM(requests), SUM(bytes)
+             FROM {src_tbl}
              WHERE ts >= ?1 AND ts < ?2
-             GROUP BY path, status_class
-             ON CONFLICT(ts, path, status_class) DO UPDATE SET
+             GROUP BY {key}, status_class
+             ON CONFLICT(ts, {key}, status_class) DO UPDATE SET
                  requests = excluded.requests,
                  bytes    = excluded.bytes",
-            (hour_start, hour_end),
-        )?;
+            dst_tbl = dim.table(dst),
+            src_tbl = dim.table(src),
+        );
+        let conn = self.pool.get().expect("get db connection from pool");
+        conn.execute(&sql, (start, end))?;
         drop(conn);
         Ok(())
     }
 
-    /// Aggregate `bucket_hour` rows for the day `[day_start, day_end)` into `bucket_day`.
-    ///
-    /// # Errors
-    /// Returns error if any `SQLite` statement during the rollup fails.
-    ///
-    /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn rollup_day(&self, day_start: i64, day_end: i64) -> Result<(), ServeError> {
-        let conn = self.pool.get().expect("get db connection from pool");
-        conn.execute(
-            "INSERT INTO bucket_day (ts, path, status_class, requests, bytes)
-             SELECT ?1 AS day_ts, path, status_class, SUM(requests), SUM(bytes)
-             FROM bucket_hour
-             WHERE ts >= ?1 AND ts < ?2
-             GROUP BY path, status_class
-             ON CONFLICT(ts, path, status_class) DO UPDATE SET
-                 requests = excluded.requests,
-                 bytes    = excluded.bytes",
-            (day_start, day_end),
-        )?;
-        drop(conn);
-        Ok(())
-    }
-
-    /// Delete `bucket_minute` rows with `ts < ts`. Returns the number deleted.
+    /// Delete rows older than `ts` from the `(dim, granularity)` table. Returns the
+    /// number of rows deleted.
     ///
     /// # Errors
     /// Returns error if the `SQLite` delete fails.
     ///
     /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn prune_bucket_minute_before(&self, ts: i64) -> Result<usize, ServeError> {
+    /// Panics if the pool cannot hand out a connection.
+    pub fn prune_before(
+        &self,
+        dim: Dimension,
+        granularity: BucketTable,
+        ts: i64,
+    ) -> Result<usize, ServeError> {
         let conn = self.pool.get().expect("get db connection from pool");
-        let n = conn.execute("DELETE FROM bucket_minute WHERE ts < ?1", [ts])?;
+        let sql = format!("DELETE FROM {} WHERE ts < ?1", dim.table(granularity));
+        let n = conn.execute(&sql, [ts])?;
         drop(conn);
         Ok(n)
     }
 
-    /// Delete `bucket_hour` rows with `ts < ts`. Returns the number deleted.
-    ///
-    /// # Errors
-    /// Returns error if the `SQLite` delete fails.
-    ///
-    /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn prune_bucket_hour_before(&self, ts: i64) -> Result<usize, ServeError> {
-        let conn = self.pool.get().expect("get db connection from pool");
-        let n = conn.execute("DELETE FROM bucket_hour WHERE ts < ?1", [ts])?;
-        drop(conn);
-        Ok(n)
-    }
-
-    /// Delete `bucket_day` rows with `ts < ts`. Returns the number deleted.
-    ///
-    /// # Errors
-    /// Returns error if the `SQLite` delete fails.
-    ///
-    /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn prune_bucket_day_before(&self, ts: i64) -> Result<usize, ServeError> {
-        let conn = self.pool.get().expect("get db connection from pool");
-        let n = conn.execute("DELETE FROM bucket_day WHERE ts < ?1", [ts])?;
-        drop(conn);
-        Ok(n)
-    }
-
-    /// Return the smallest `ts` in `table`, or `None` if the table is empty.
+    /// Earliest `ts` present in the `(dim, granularity)` table, or `None` if empty.
     ///
     /// # Errors
     /// Returns error if the `SQLite` query fails.
     ///
     /// # Panics
-    /// Panics if the store mutex was poisoned.
-    pub fn min_bucket_ts(&self, table: BucketTable) -> Result<Option<i64>, ServeError> {
+    /// Panics if the pool cannot hand out a connection.
+    pub fn min_ts(
+        &self,
+        dim: Dimension,
+        granularity: BucketTable,
+    ) -> Result<Option<i64>, ServeError> {
         let conn = self.pool.get().expect("get db connection from pool");
-        let sql = format!("SELECT MIN(ts) FROM {}", table.as_str());
+        let sql = format!("SELECT MIN(ts) FROM {}", dim.table(granularity));
         let result: Option<i64> = conn.query_row(&sql, [], |row| row.get(0))?;
         drop(conn);
         Ok(result)
@@ -412,7 +416,7 @@ impl Store {
              GROUP BY path
              ORDER BY {order_col} DESC
              LIMIT ?2",
-            tbl = table.as_str(),
+            tbl = Dimension::Path.table(table),
         );
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -444,7 +448,7 @@ impl Store {
              WHERE ts >= ?1
              GROUP BY ts, status_class
              ORDER BY ts, status_class",
-            tbl = table.as_str()
+            tbl = Dimension::Path.table(table)
         );
         let raw: Vec<(i64, i64, i64, i64)> = self.with_conn(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -479,7 +483,7 @@ impl Store {
             "SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(bytes), 0)
              FROM {tbl}
              WHERE ts >= ?1 AND status_class = 2",
-            tbl = table.as_str()
+            tbl = Dimension::Path.table(table)
         );
         self.with_conn(|conn| {
             let (r, b): (i64, i64) =
@@ -502,7 +506,7 @@ impl Store {
              FROM {tbl}
              WHERE ts >= ?1
              GROUP BY status_class",
-            tbl = table.as_str()
+            tbl = Dimension::Path.table(table)
         );
         let raw: Vec<(i64, i64, i64)> = self.with_conn(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -523,26 +527,31 @@ impl Store {
             .collect()
     }
 
-    /// Upsert a batch of `(ts, path, status_class, requests, bytes)` rows into `bucket_minute`.
+    /// Upsert a batch of `(ts, key, status_class, requests, bytes)` rows into the
+    /// `dim` minute table, accumulating on conflict.
     ///
     /// # Errors
-    /// Returns error if any `requests`/`bytes` value exceeds `i64::MAX`, or if the `SQLite`
-    /// transaction fails.
-    pub fn upsert_bucket_minute(
+    /// Returns error if any `requests`/`bytes` value exceeds `i64::MAX`, or if the
+    /// `SQLite` transaction fails.
+    pub fn upsert_minute(
         &self,
+        dim: Dimension,
         rows: &[(i64, smol_str::SmolStr, u8, u64, u64)],
     ) -> Result<(), ServeError> {
+        let key = dim.key_column();
+        let sql = format!(
+            "INSERT INTO {tbl} (ts, {key}, status_class, requests, bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(ts, {key}, status_class) DO UPDATE SET
+                 requests = requests + excluded.requests,
+                 bytes    = bytes    + excluded.bytes",
+            tbl = dim.table(BucketTable::Minute),
+        );
         self.with_conn(|conn| {
             let tx = conn.transaction()?;
             {
-                let mut stmt = tx.prepare(
-                    "INSERT INTO bucket_minute (ts, path, status_class, requests, bytes)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(ts, path, status_class) DO UPDATE SET
-                         requests = requests + excluded.requests,
-                         bytes    = bytes    + excluded.bytes",
-                )?;
-                for (ts, path, status_class, requests, bytes) in rows {
+                let mut stmt = tx.prepare(&sql)?;
+                for (ts, key_val, status_class, requests, bytes) in rows {
                     let req_i64 = i64::try_from(*requests).map_err(|_| {
                         ServeError::Stats(format!("requests={requests} exceeds i64::MAX"))
                     })?;
@@ -551,7 +560,7 @@ impl Store {
                     })?;
                     stmt.execute((
                         *ts,
-                        path.as_str(),
+                        key_val.as_str(),
                         i64::from(*status_class),
                         req_i64,
                         bytes_i64,
@@ -561,6 +570,48 @@ impl Store {
             tx.commit()?;
             Ok(())
         })
+    }
+
+    /// Return per-`(country, status_class)` totals from `table` since `since_ts`.
+    /// The caller ranks and truncates to a top-N.
+    ///
+    /// # Errors
+    /// Returns error if the `SQLite` query fails or a `status_class` is out of
+    /// `u8` range.
+    pub fn country_breakdown(
+        &self,
+        table: BucketTable,
+        since_ts: i64,
+    ) -> Result<Vec<CountryClassRow>, ServeError> {
+        let sql = format!(
+            "SELECT country, status_class, SUM(requests), SUM(bytes)
+             FROM {tbl}
+             WHERE ts >= ?1
+             GROUP BY country, status_class",
+            tbl = Dimension::Country.table(table)
+        );
+        let raw: Vec<(String, i64, i64, i64)> = self.with_conn(|conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map([since_ts], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ServeError::from)?;
+            Ok::<Vec<_>, ServeError>(rows)
+        })?;
+        raw.into_iter()
+            .map(|(country, sc, requests, bytes)| {
+                let status_class = u8::try_from(sc)
+                    .map_err(|_| ServeError::Stats(format!("status_class={sc} out of range")))?;
+                Ok(CountryClassRow {
+                    country,
+                    status_class,
+                    requests,
+                    bytes,
+                })
+            })
+            .collect()
     }
 
     /// # Panics
@@ -643,6 +694,40 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE INDEX idx_bd_class_ts_path ON bucket_day(status_class, ts, path);
         ",
     ),
+    (
+        5,
+        r"
+        CREATE TABLE country_minute (
+            ts            INTEGER NOT NULL,
+            country       TEXT    NOT NULL,
+            status_class  INTEGER NOT NULL,
+            requests      INTEGER NOT NULL,
+            bytes         INTEGER NOT NULL,
+            PRIMARY KEY (ts, country, status_class)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_cm_ts ON country_minute(ts);
+
+        CREATE TABLE country_hour (
+            ts            INTEGER NOT NULL,
+            country       TEXT    NOT NULL,
+            status_class  INTEGER NOT NULL,
+            requests      INTEGER NOT NULL,
+            bytes         INTEGER NOT NULL,
+            PRIMARY KEY (ts, country, status_class)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_ch_ts ON country_hour(ts);
+
+        CREATE TABLE country_day (
+            ts            INTEGER NOT NULL,
+            country       TEXT    NOT NULL,
+            status_class  INTEGER NOT NULL,
+            requests      INTEGER NOT NULL,
+            bytes         INTEGER NOT NULL,
+            PRIMARY KEY (ts, country, status_class)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_cd_ts ON country_day(ts);
+        ",
+    ),
 ];
 
 #[cfg(test)]
@@ -652,14 +737,36 @@ mod tests {
 
     fn seed_for_dashboard(store: &Store) {
         store
-            .upsert_bucket_minute(&[
-                (100, "/a.js".into(), 2, 10, 1000),
-                (100, "/b.js".into(), 2, 3, 300),
-                (100, "/wp-admin".into(), 4, 50, 0),
-                (160, "/a.js".into(), 2, 5, 500),
-                (160, "/b.js".into(), 2, 7, 700),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (100, "/a.js".into(), 2, 10, 1000),
+                    (100, "/b.js".into(), 2, 3, 300),
+                    (100, "/wp-admin".into(), 4, 50, 0),
+                    (160, "/a.js".into(), 2, 5, 500),
+                    (160, "/b.js".into(), 2, 7, 700),
+                ],
+            )
             .unwrap();
+    }
+
+    #[test]
+    fn migration_v5_creates_country_tables() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("s.db")).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 5);
+        let conn = store.conn_for_test();
+        for tbl in ["country_minute", "country_hour", "country_day"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [tbl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "missing table {tbl}");
+        }
+        drop(conn);
     }
 
     #[test]
@@ -681,10 +788,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_bucket_minute(&[
-                (100, "/a".into(), 2, 1, 10_000),
-                (100, "/b".into(), 2, 100, 100),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (100, "/a".into(), 2, 1, 10_000),
+                    (100, "/b".into(), 2, 100, 100),
+                ],
+            )
             .unwrap();
         let by_bytes = store
             .top_assets(BucketTable::Minute, 0, TopMetric::Bytes, 30)
@@ -910,7 +1020,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_bucket_minute(&[(1_700_000_000, "/a.js".into(), 2, 5, 1024)])
+            .upsert_minute(
+                Dimension::Path,
+                &[(1_700_000_000, "/a.js".into(), 2, 5, 1024)],
+            )
             .unwrap();
         let (r, b): (i64, i64) = {
             let conn = store.pool.get().unwrap();
@@ -930,10 +1043,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_bucket_minute(&[(1000, "/a".into(), 2, 3, 100)])
+            .upsert_minute(Dimension::Path, &[(1000, "/a".into(), 2, 3, 100)])
             .unwrap();
         store
-            .upsert_bucket_minute(&[(1000, "/a".into(), 2, 4, 200)])
+            .upsert_minute(Dimension::Path, &[(1000, "/a".into(), 2, 4, 200)])
             .unwrap();
         let (r, b): (i64, i64) = {
             let conn = store.pool.get().unwrap();
@@ -953,13 +1066,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_bucket_minute(&[
-                (3600, "/a".into(), 2, 1, 10),
-                (3660, "/a".into(), 2, 2, 20),
-                (5400, "/b".into(), 4, 7, 0),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (3600, "/a".into(), 2, 1, 10),
+                    (3660, "/a".into(), 2, 2, 20),
+                    (5400, "/b".into(), 4, 7, 0),
+                ],
+            )
             .unwrap();
-        store.rollup_hour(3600, 7200).unwrap();
+        store
+            .rollup(
+                Dimension::Path,
+                BucketTable::Minute,
+                BucketTable::Hour,
+                3600,
+                7200,
+            )
+            .unwrap();
         let ((r, b), (r2,)): ((i64, i64), (i64,)) = {
             let conn = store.pool.get().unwrap();
             let rb = conn
@@ -984,7 +1108,15 @@ mod tests {
         assert_eq!(r2, 7);
 
         // Running again must be idempotent.
-        store.rollup_hour(3600, 7200).unwrap();
+        store
+            .rollup(
+                Dimension::Path,
+                BucketTable::Minute,
+                BucketTable::Hour,
+                3600,
+                7200,
+            )
+            .unwrap();
         let (r, b): (i64, i64) = {
             let conn = store.pool.get().unwrap();
             conn.query_row(
@@ -1013,8 +1145,24 @@ mod tests {
             .unwrap();
         }
 
-        store.rollup_day(86_400, 172_800).unwrap();
-        store.rollup_day(86_400, 172_800).unwrap(); // idempotent
+        store
+            .rollup(
+                Dimension::Path,
+                BucketTable::Hour,
+                BucketTable::Day,
+                86_400,
+                172_800,
+            )
+            .unwrap();
+        store
+            .rollup(
+                Dimension::Path,
+                BucketTable::Hour,
+                BucketTable::Day,
+                86_400,
+                172_800,
+            )
+            .unwrap();
 
         let ((r, b), (r2,)): ((i64, i64), (i64,)) = {
             let conn = store.pool.get().unwrap();
@@ -1045,13 +1193,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_bucket_minute(&[
-                (100, "/a".into(), 2, 1, 1),
-                (200, "/a".into(), 2, 1, 1),
-                (300, "/a".into(), 2, 1, 1),
-            ])
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    (100, "/a".into(), 2, 1, 1),
+                    (200, "/a".into(), 2, 1, 1),
+                    (300, "/a".into(), 2, 1, 1),
+                ],
+            )
             .unwrap();
-        let removed = store.prune_bucket_minute_before(200).unwrap();
+        let removed = store
+            .prune_before(Dimension::Path, BucketTable::Minute, 200)
+            .unwrap();
         assert_eq!(removed, 1);
         let count: i64 = {
             let conn = store.pool.get().unwrap();
@@ -1076,5 +1229,110 @@ mod tests {
             store.meta_get("last_hour_rollup_ts").unwrap().as_deref(),
             Some("7200")
         );
+    }
+
+    #[test]
+    fn country_minute_upsert_and_breakdown() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("s.db")).unwrap();
+        store
+            .upsert_minute(
+                Dimension::Country,
+                &[
+                    (60, "US".into(), 2, 3, 300),
+                    (60, "US".into(), 4, 1, 40),
+                    (60, "DE".into(), 2, 5, 500),
+                ],
+            )
+            .unwrap();
+        // Upsert again to confirm additive accumulation on conflict.
+        store
+            .upsert_minute(Dimension::Country, &[(60, "US".into(), 2, 2, 100)])
+            .unwrap();
+
+        let rows = store.country_breakdown(BucketTable::Minute, 0).unwrap();
+        let us2 = rows
+            .iter()
+            .find(|r| r.country == "US" && r.status_class == 2)
+            .unwrap();
+        assert_eq!(us2.requests, 5);
+        assert_eq!(us2.bytes, 400);
+        let de2 = rows
+            .iter()
+            .find(|r| r.country == "DE" && r.status_class == 2)
+            .unwrap();
+        assert_eq!(de2.requests, 5);
+        assert_eq!(de2.bytes, 500);
+    }
+
+    #[test]
+    fn country_rollup_hour_and_day_aggregate() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("s.db")).unwrap();
+        store
+            .upsert_minute(
+                Dimension::Country,
+                &[(3600, "US".into(), 2, 5, 50), (4200, "US".into(), 2, 2, 20)],
+            )
+            .unwrap();
+        store
+            .rollup(
+                Dimension::Country,
+                BucketTable::Minute,
+                BucketTable::Hour,
+                3600,
+                7200,
+            )
+            .unwrap();
+        // Idempotent re-run.
+        store
+            .rollup(
+                Dimension::Country,
+                BucketTable::Minute,
+                BucketTable::Hour,
+                3600,
+                7200,
+            )
+            .unwrap();
+        let hour = store.country_breakdown(BucketTable::Hour, 0).unwrap();
+        let us = hour.iter().find(|r| r.country == "US").unwrap();
+        assert_eq!(us.requests, 7);
+        assert_eq!(us.bytes, 70);
+
+        store
+            .rollup(
+                Dimension::Country,
+                BucketTable::Hour,
+                BucketTable::Day,
+                0,
+                86_400,
+            )
+            .unwrap();
+        let day = store.country_breakdown(BucketTable::Day, 0).unwrap();
+        let us = day.iter().find(|r| r.country == "US").unwrap();
+        assert_eq!(us.requests, 7);
+        assert_eq!(us.bytes, 70);
+    }
+
+    #[test]
+    fn country_prune_removes_old_rows() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("s.db")).unwrap();
+        store
+            .upsert_minute(
+                Dimension::Country,
+                &[
+                    (60, "US".into(), 2, 1, 1),
+                    (1_000_000, "US".into(), 2, 1, 1),
+                ],
+            )
+            .unwrap();
+        let removed = store
+            .prune_before(Dimension::Country, BucketTable::Minute, 1000)
+            .unwrap();
+        assert_eq!(removed, 1);
+        let rows = store.country_breakdown(BucketTable::Minute, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requests, 1);
     }
 }

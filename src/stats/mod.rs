@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod clock;
 pub mod config;
+pub mod geo;
 pub mod recorder;
 pub mod rollup;
 pub mod routes;
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::ServeError;
 use auth::{AuthMetrics, SetupTokenState};
+use geo::{CountryResolver, GeoResolver};
 use recorder::StatEvent;
 use store::Store;
 
@@ -76,8 +78,30 @@ impl StatsHandle {
             s
         };
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let geo: Option<Arc<dyn CountryResolver>> =
+            config
+                .geoip_db_path
+                .as_deref()
+                .and_then(|path| match GeoResolver::open(path) {
+                    Ok(r) => {
+                        tracing::info!(
+                            target: "serve::stats",
+                            "geoip database loaded from {}", path.display()
+                        );
+                        Some(Arc::new(r) as Arc<dyn CountryResolver>)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "serve::stats",
+                            "geoip database unavailable ({e}); country stats disabled"
+                        );
+                        None
+                    }
+                });
+        let geo_enabled = geo.is_some();
         let (tx, rx) = mpsc::channel::<StatEvent>(4096);
-        let recorder = RecorderHandle::new(tx, clock.clone(), url_prefix.clone());
+        let recorder = RecorderHandle::new(tx, clock.clone(), url_prefix.clone())
+            .with_geo(geo, config.trust_forwarded_for);
         let writer = WriterHandle::new();
         let metrics = Arc::new(AuthMetrics::default());
         let shutdown = CancellationToken::new();
@@ -100,6 +124,7 @@ impl StatsHandle {
             writer,
             session_ttl_days: config.session_ttl_days,
             secure_cookies,
+            geo_enabled,
             url_prefix,
         };
 
@@ -149,6 +174,8 @@ mod tests {
             session_ttl_days: 30,
             secure_cookies: None,
             url_prefix: None,
+            geoip_db_path: None,
+            trust_forwarded_for: false,
         };
         let h = StatsHandle::start(&cfg, false).await.unwrap();
         h.shutdown().await;
@@ -162,6 +189,8 @@ mod tests {
             session_ttl_days: 0,
             secure_cookies: None,
             url_prefix: None,
+            geoip_db_path: None,
+            trust_forwarded_for: false,
         };
         let err = StatsHandle::start(&cfg, false).await.unwrap_err();
         let msg = format!("{err}");
@@ -176,6 +205,8 @@ mod tests {
             session_ttl_days: 30,
             secure_cookies: None,
             url_prefix: None,
+            geoip_db_path: None,
+            trust_forwarded_for: false,
         };
         let h1 = StatsHandle::start(&cfg, false).await.unwrap();
         {

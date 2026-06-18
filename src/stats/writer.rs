@@ -1,7 +1,7 @@
 use crate::errors::ServeError;
 use crate::stats::clock::Clock;
 use crate::stats::recorder::StatEvent;
-use crate::stats::store::Store;
+use crate::stats::store::{Dimension, Store};
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -63,6 +63,7 @@ pub struct WriterTask {
     handle: WriterHandle,
     shutdown: CancellationToken,
     map: HashMap<BucketKey, BucketAgg>,
+    country_map: HashMap<BucketKey, BucketAgg>,
 }
 
 impl WriterTask {
@@ -80,14 +81,32 @@ impl WriterTask {
             handle,
             shutdown,
             map: HashMap::new(),
+            country_map: HashMap::new(),
         }
     }
 
     fn ingest(&mut self, ev: StatEvent) {
-        let key = (ev.minute_ts, ev.path, ev.status_class);
-        let entry = self.map.entry(key).or_insert((0, 0));
+        let StatEvent {
+            minute_ts,
+            path,
+            status_class,
+            bytes,
+            country,
+        } = ev;
+        let entry = self
+            .map
+            .entry((minute_ts, path, status_class))
+            .or_insert((0, 0));
         entry.0 = entry.0.saturating_add(1);
-        entry.1 = entry.1.saturating_add(ev.bytes);
+        entry.1 = entry.1.saturating_add(bytes);
+        if let Some(cc) = country {
+            let c = self
+                .country_map
+                .entry((minute_ts, cc, status_class))
+                .or_insert((0, 0));
+            c.0 = c.0.saturating_add(1);
+            c.1 = c.1.saturating_add(bytes);
+        }
     }
 
     fn drain_into_rows(
@@ -98,28 +117,41 @@ impl WriterTask {
             .collect()
     }
 
-    /// Try to flush the in-memory map. On error, restore the map so events
-    /// are retained for the next attempt.
-    fn flush(&mut self) -> Result<(), ServeError> {
-        if self.map.is_empty() {
-            self.handle
-                .inner
-                .last_flush_ts
-                .store(self.clock.now(), Ordering::Relaxed);
+    /// Drain one dimension's map into its minute table. On error, restore the
+    /// drained rows so they retry on the next flush, and bump the failure counter.
+    fn flush_map(
+        store: &Store,
+        handle: &WriterHandle,
+        dim: Dimension,
+        map: &mut HashMap<BucketKey, BucketAgg>,
+    ) -> Result<(), ServeError> {
+        if map.is_empty() {
             return Ok(());
         }
-        let rows = Self::drain_into_rows(&mut self.map);
-        if let Err(e) = self.store.upsert_bucket_minute(&rows) {
-            self.handle
-                .inner
-                .write_failures
-                .fetch_add(1, Ordering::Relaxed);
+        let rows = Self::drain_into_rows(map);
+        if let Err(e) = store.upsert_minute(dim, &rows) {
+            handle.inner.write_failures.fetch_add(1, Ordering::Relaxed);
             // Restore for next attempt.
-            for (ts, path, sc, r, b) in rows {
-                self.map.insert((ts, path, sc), (r, b));
+            for (ts, key, sc, r, b) in rows {
+                map.insert((ts, key, sc), (r, b));
             }
             return Err(e);
         }
+        Ok(())
+    }
+
+    /// Try to flush the in-memory maps. The path map is flushed first; if it fails
+    /// we return without attempting the country flush (each failing map is restored
+    /// for retry). An all-empty flush still stamps `last_flush_ts` as a liveness
+    /// signal.
+    fn flush(&mut self) -> Result<(), ServeError> {
+        Self::flush_map(&self.store, &self.handle, Dimension::Path, &mut self.map)?;
+        Self::flush_map(
+            &self.store,
+            &self.handle,
+            Dimension::Country,
+            &mut self.country_map,
+        )?;
         self.handle
             .inner
             .last_flush_ts
@@ -149,7 +181,7 @@ impl WriterTask {
                 maybe_ev = self.rx.recv() => {
                     if let Some(ev) = maybe_ev {
                         self.ingest(ev);
-                        if self.map.len() >= FLUSH_KEY_THRESHOLD
+                        if self.map.len() + self.country_map.len() >= FLUSH_KEY_THRESHOLD
                             && let Err(e) = self.flush() {
                                 tracing::warn!(target: "serve::stats::writer", "size-flush failed: {e}");
                             }
@@ -188,6 +220,17 @@ mod tests {
             path: path.into(),
             status_class: sc,
             bytes,
+            country: None,
+        }
+    }
+
+    fn ev_cc(ts: i64, path: &str, sc: u8, bytes: u64, cc: &str) -> StatEvent {
+        StatEvent {
+            minute_ts: ts,
+            path: path.into(),
+            status_class: sc,
+            bytes,
+            country: Some(cc.into()),
         }
     }
 
@@ -357,6 +400,38 @@ mod tests {
         clock.set(1_700_000_010);
         t.flush().unwrap();
         assert_eq!(handle.last_flush_ts(), Some(1_700_000_010));
+    }
+
+    #[test]
+    fn flush_writes_country_rows() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("s.db")).unwrap());
+        let (_tx, rx) = mpsc::channel::<StatEvent>(8);
+        let mut t = task(rx, store.clone(), CancellationToken::new());
+        t.ingest(ev_cc(60, "/a", 2, 100, "US"));
+        t.ingest(ev_cc(60, "/b", 2, 200, "US"));
+        t.ingest(ev_cc(60, "/c", 4, 5, "DE"));
+        t.flush().unwrap();
+
+        let rows = store
+            .country_breakdown(crate::stats::store::BucketTable::Minute, 0)
+            .unwrap();
+        let us = rows.iter().find(|r| r.country == "US").unwrap();
+        assert_eq!(us.requests, 2);
+        assert_eq!(us.bytes, 300);
+        let de = rows.iter().find(|r| r.country == "DE").unwrap();
+        assert_eq!(de.status_class, 4);
+        assert_eq!(de.requests, 1);
+        // Path buckets still populated as before.
+        let assets = store
+            .top_assets(
+                crate::stats::store::BucketTable::Minute,
+                0,
+                crate::stats::store::TopMetric::Bytes,
+                30,
+            )
+            .unwrap();
+        assert_eq!(assets.len(), 2); // /a and /b are 2xx; /c is 4xx (excluded by top_assets)
     }
 
     #[test]

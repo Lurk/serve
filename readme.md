@@ -131,6 +131,54 @@ After setup, log in at `/__stats__/login` to see:
 - Top 30 paths (toggle by requests or bytes)
 - Windows: 1 day, 7 days, 30 days, 12 months
 
+### Country statistics (optional)
+
+The stats dashboard can also show a per-country breakdown of requests and
+bytes. This is off by default and requires a GeoIP country database in
+MaxMind's `.mmdb` format. With no database configured, the country panel simply
+does not appear and nothing else changes.
+
+**Privacy:** client IP addresses are resolved to a 2-letter country code in
+memory, and only the code is stored. Raw IP addresses are never written to the
+stats database or the logs.
+
+#### Getting a database
+
+Any MaxMind-format *country* database works. Two free options:
+
+- **MaxMind GeoLite2** (free, requires an account): sign up at
+  <https://www.maxmind.com/en/geolite2/signup>, then download
+  `GeoLite2-Country.mmdb`.
+- **DB-IP IP-to-Country Lite** (free, no account, CC-BY): download the `.mmdb`
+  from <https://db-ip.com/db/download/ip-to-country-lite>.
+
+#### Configuring
+
+Add the path to the `[stats]` table in `serve.toml`:
+
+```toml
+[stats]
+db_path = "/var/lib/serve/stats.db"
+# Path to the GeoIP country database. Its presence enables the country panel.
+geoip_db_path = "/var/lib/serve/GeoLite2-Country.mmdb"
+# Set true ONLY when serve runs behind exactly one trusted proxy/CDN that sets
+# X-Forwarded-For. serve then geolocates the right-most entry — the address that
+# proxy observed, which a client cannot spoof. When serve is directly exposed,
+# leave this false; otherwise clients can forge their country with the header.
+# With more than one proxy hop in front, the right-most entry is an inner proxy
+# rather than the client, so leave this false in that case too.
+trust_forwarded_for = false
+```
+
+If the configured file is missing or unreadable, `serve` logs a warning and
+keeps running with country stats disabled — it will not fail to start.
+
+#### Updating
+
+The database is read once at startup. To refresh it, replace the `.mmdb` file
+and restart `serve`. Country data drifts slowly, so an occasional update is
+enough.
+
 ### Retention
 
 Minute buckets are kept for 25 hours, hourly buckets for 32 days, daily

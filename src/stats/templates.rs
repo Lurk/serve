@@ -77,6 +77,7 @@ mod tests {
             "chart-bytes",
             "id=\"assets\"",
             "id=\"cards\"",
+            "id=\"countries\"",
             "logout",
         ] {
             assert!(h.contains(needle), "dashboard missing {needle}");

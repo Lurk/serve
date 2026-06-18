@@ -38,6 +38,7 @@ pub(super) fn test_state(setup_required: bool) -> StatsState {
         writer: WriterHandle::new(),
         session_ttl_days: 30,
         secure_cookies: false,
+        geo_enabled: false,
         url_prefix,
     }
 }
