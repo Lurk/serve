@@ -13,6 +13,10 @@ fn build_app_for_test(
 }
 
 fn client() -> reqwest::Client {
+    // reqwest uses rustls with `rustls-no-provider`, so the process-wide rustls
+    // crypto provider must be installed before building a client. Idempotent:
+    // ignore the error returned when a default is already set.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .cookie_store(true)
         .redirect(reqwest::redirect::Policy::none())
