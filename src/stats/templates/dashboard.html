@@ -62,8 +62,10 @@
     .sw.c1 { background: var(--c1); } .sw.c2 { background: var(--c2); }
     .sw.c3 { background: var(--c3); } .sw.c4 { background: var(--c4); }
     .sw.c5 { background: var(--c5); }
+    .cbar-tip { position: fixed; }
     .cbar { display: flex; height: 0.8em; width: 100%; min-width: 80px;
-            border-radius: 3px; overflow: hidden; background: var(--border); }
+            border-radius: 3px; overflow: hidden; background: var(--border);
+            cursor: default; }
     .cbar span { display: block; height: 100%; }
     .cbar .c1 { background: var(--c1); } .cbar .c2 { background: var(--c2); }
     .cbar .c3 { background: var(--c3); } .cbar .c4 { background: var(--c4); }
@@ -141,6 +143,7 @@
       <th>#</th><th>Country</th><th class="num">Requests</th>
       <th class="num">Bytes</th><th>By class</th>
     </tr></thead><tbody></tbody></table>
+    <div class="chart-tip cbar-tip" id="tip-country"></div>
   </div>
 
   <footer id="health"></footer>
@@ -513,15 +516,32 @@
       const r = (byClass[cd] && byClass[cd].requests) || 0;
       if (r <= 0) return '';
       const pct = (r / total * 100).toFixed(2);
-      return `<span class="c${cd}" style="width:${pct}%" title="${cd}xx: ${fmt.int(r)}"></span>`;
+      return `<span class="c${cd}" style="width:${pct}%"></span>`;
     }).join('');
     return `<div class="cbar">${segs}</div>`;
   }
+
+  function buildCountryTipHtml(byClass) {
+    let total = 0;
+    const rows = CLASS_DIGITS.map(cd => {
+      const r = (byClass[cd] && byClass[cd].requests) || 0;
+      if (r <= 0) return '';
+      total += r;
+      return `<div class="row"><span><span class="sw c${cd}"></span>${cd}xx</span>` +
+             `<span>${fmt.int(r)}</span></div>`;
+    }).join('');
+    if (total <= 0) return '';
+    return rows + `<div class="row total"><span>Total</span><span>${fmt.int(total)}</span></div>`;
+  }
+
+  let countryRows = [];
 
   function renderCountries(c) {
     const panel = document.getElementById('countries-panel');
     if (!c.enabled) { panel.hidden = true; return; }
     panel.hidden = false;
+    countryRows = c.rows;
+    document.getElementById('tip-country').style.display = 'none';
     const tbody = document.querySelector('#countries tbody');
     tbody.innerHTML = c.rows.map((r, i) => {
       const name = escapeHtml(`${flagEmoji(r.country)}${countryName(r.country)}`);
@@ -596,6 +616,31 @@
       load();
     }
   });
+  (function wireCountryTip() {
+    const tbody = document.querySelector('#countries tbody');
+    const tip = document.getElementById('tip-country');
+    tbody.addEventListener('mousemove', e => {
+      const bar = e.target.closest('.cbar');
+      const tr = e.target.closest('tr');
+      if (!bar || !tr) { tip.style.display = 'none'; return; }
+      const idx = Array.prototype.indexOf.call(tbody.children, tr);
+      const row = countryRows[idx];
+      if (!row) { tip.style.display = 'none'; return; }
+      const html = buildCountryTipHtml(row.by_class);
+      if (!html) { tip.style.display = 'none'; return; }
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      const tipW = tip.offsetWidth, tipH = tip.offsetHeight;
+      let left = e.clientX + 14;
+      if (left + tipW > window.innerWidth - 4) left = e.clientX - 14 - tipW;
+      let top = e.clientY + 14;
+      if (top + tipH > window.innerHeight - 4) top = e.clientY - 14 - tipH;
+      tip.style.left = Math.max(4, left) + 'px';
+      tip.style.top = Math.max(4, top) + 'px';
+    });
+    tbody.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  })();
+
   window.addEventListener('load', load);
 
   let chartRafPending = false;
