@@ -34,13 +34,16 @@ impl GeoResolver {
     /// The single place that touches the maxminddb lookup API, so a crate
     /// upgrade only needs adjusting here. Returns the ISO code if present.
     ///
-    /// maxminddb 0.24 returns `Result<T, MaxMindDBError>` (an
-    /// `AddressNotFoundError` when the IP is absent), so `.ok()?` collapses both
-    /// the not-found and decode-error cases to `None`. If a future crate version
-    /// returns `Result<Option<T>, _>` instead, change `.ok()?` to `.ok()??`.
+    /// maxminddb 0.29 splits the lookup in two: `lookup` returns a
+    /// `Result<LookupResult, _>` (a lightweight record locator) and
+    /// `LookupResult::decode` returns `Result<Option<T>, _>` — `Ok(None)` when
+    /// the IP is absent from the database. The `.ok()?` collapses each `Err`
+    /// arm to `None`, and the extra `?` on `decode` unwraps the not-found
+    /// `Option`.
     fn lookup_iso(&self, ip: IpAddr) -> Option<SmolStr> {
-        let country: maxminddb::geoip2::Country = self.reader.lookup(ip).ok()?;
-        let code = country.country?.iso_code?;
+        let record = self.reader.lookup(ip).ok()?;
+        let country: maxminddb::geoip2::Country = record.decode().ok()??;
+        let code = country.country.iso_code?;
         Some(SmolStr::new(code))
     }
 }

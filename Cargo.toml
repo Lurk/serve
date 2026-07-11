@@ -65,7 +65,7 @@ bytes = "1.12.1"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.34.0"
 x509-parser = "0.18.1"
-maxminddb = "0.24"
+maxminddb = "0.29"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
