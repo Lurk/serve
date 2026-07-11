@@ -2,6 +2,35 @@
 //! methods. The `impl Store` query logic lives in sibling modules
 //! (`auth`, `buckets`).
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MinuteRow {
+    pub ts: i64,
+    pub key: smol_str::SmolStr,
+    pub status_class: u8,
+    pub requests: u64,
+    pub bytes: u64,
+}
+
+impl MinuteRow {
+    #[must_use]
+    #[cfg(test)]
+    pub const fn basic(
+        ts: i64,
+        key: smol_str::SmolStr,
+        status_class: u8,
+        requests: u64,
+        bytes: u64,
+    ) -> Self {
+        Self {
+            ts,
+            key,
+            status_class,
+            requests,
+            bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AssetRow {
     pub path: String,

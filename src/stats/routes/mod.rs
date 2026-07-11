@@ -74,6 +74,7 @@ pub fn router(state: StatsState) -> axum::Router {
         .route(&format!("{p}/api/countries"), get(api::get_countries))
         .route(&format!("{p}/api/summary"), get(api::get_summary))
         .route(&format!("{p}/api/health"), get(api::get_health))
+        .route(&format!("{p}/api/latency"), get(api::get_latency))
         .with_state(state)
         .layer(axum::middleware::from_fn(security_headers))
 }

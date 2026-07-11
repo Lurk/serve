@@ -17,7 +17,10 @@ mod migrations;
 mod source;
 mod types;
 
-pub use types::{AssetRow, BucketTable, CountryClassRow, Dimension, TimeseriesPoint, TopMetric};
+pub use source::SourceRow;
+pub use types::{
+    AssetRow, BucketTable, CountryClassRow, Dimension, MinuteRow, TimeseriesPoint, TopMetric,
+};
 
 use migrations::MIGRATIONS;
 

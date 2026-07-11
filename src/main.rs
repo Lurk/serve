@@ -118,12 +118,12 @@ fn build_app(
                 route.upstream,
                 route.strip_prefix
             );
-            let state = ProxyState {
-                client: client.clone(),
-                upstream: route.upstream.clone(),
-                prefix: route.path.clone(),
-                strip_prefix: route.strip_prefix,
-            };
+            let state = ProxyState::new(
+                client.clone(),
+                route.upstream.clone(),
+                route.path.clone(),
+                route.strip_prefix,
+            );
             app = app.nest(&route.path, proxy_router(state));
         }
     }

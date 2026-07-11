@@ -11,6 +11,11 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tower::{Layer, Service};
 
+/// Response extension naming the source that served a request. Absent → local
+/// static serving. Set by the proxy handler (see `src/proxy.rs`).
+#[derive(Clone)]
+pub struct SourceTag(pub smol_str::SmolStr);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatEvent {
     pub minute_ts: i64,
@@ -19,6 +24,14 @@ pub struct StatEvent {
     pub bytes: u64,
     /// Resolved client country (ISO alpha-2), or `None` when geo is disabled.
     pub country: Option<SmolStr>,
+    /// Request received -> response headers ready (ms).
+    pub ttfb_ms: u32,
+    /// Request received -> response body fully sent (ms).
+    pub total_ms: u32,
+    /// Response status was 304 Not Modified.
+    pub not_modified: bool,
+    /// Origin that served the request: `"local"` or `"proxy:<route>"`.
+    pub source: smol_str::SmolStr,
 }
 
 pub const MAX_PATH_BYTES: usize = 512;
@@ -74,6 +87,7 @@ pub struct RecorderHandle {
     geo: Option<Arc<dyn crate::stats::geo::CountryResolver>>,
     /// Trust `X-Forwarded-For` for the client IP (see config).
     trust_forwarded_for: bool,
+    mono: Arc<dyn crate::stats::clock::MonoClock>,
 }
 
 impl RecorderHandle {
@@ -90,11 +104,20 @@ impl RecorderHandle {
             skip_prefix,
             geo: None,
             trust_forwarded_for: false,
+            mono: Arc::new(crate::stats::clock::SystemMonoClock::new()),
         }
     }
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Override the monotonic clock (tests inject scripted latencies).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_mono(mut self, mono: Arc<dyn crate::stats::clock::MonoClock>) -> Self {
+        self.mono = mono;
+        self
     }
 
     /// Attach a country resolver and the forwarded-for trust flag. Returns
@@ -295,6 +318,7 @@ where
             self.handle.resolve_country(&req)
         };
         let handle = self.handle.clone();
+        let start_ms = handle.mono.now_ms();
         let fut = self.inner.call(req);
 
         Box::pin(async move {
@@ -302,16 +326,31 @@ where
             let on_done: Box<dyn FnOnce(u64) + Send> = if skip {
                 Box::new(|_| {})
             } else {
+                let ttfb_ms = u32::try_from(handle.mono.now_ms().saturating_sub(start_ms))
+                    .unwrap_or(u32::MAX);
+                let source = response
+                    .extensions()
+                    .get::<SourceTag>()
+                    .map_or_else(|| smol_str::SmolStr::new_static("local"), |t| t.0.clone());
                 let path = canonicalize_path(&path_and_query);
                 let minute_ts = minute_floor(handle.clock.now());
-                let status_class = status_class(response.status().as_u16());
+                let status_code = response.status().as_u16();
+                let status_class = status_class(status_code);
+                let not_modified = status_code == 304;
+                let mono = handle.mono.clone();
                 Box::new(move |bytes| {
+                    let total_ms =
+                        u32::try_from(mono.now_ms().saturating_sub(start_ms)).unwrap_or(u32::MAX);
                     let event = StatEvent {
                         minute_ts,
                         path,
                         status_class,
                         bytes,
                         country,
+                        ttfb_ms,
+                        total_ms,
+                        not_modified,
+                        source,
                     };
                     match handle.tx.try_send(event) {
                         Ok(()) => {}
@@ -517,6 +556,10 @@ mod tests {
             status_class: 2,
             bytes: 0,
             country: None,
+            ttfb_ms: 0,
+            total_ms: 0,
+            not_modified: false,
+            source: "local".into(),
         })
         .unwrap();
         let handle = RecorderHandle::new(tx.clone(), clock, Arc::from("/__stats__"));
@@ -663,5 +706,70 @@ mod tests {
         );
         let _ = drain(app.oneshot(req).await.unwrap()).await;
         assert_eq!(rx.recv().await.unwrap().country.as_deref(), Some("US"));
+    }
+
+    #[tokio::test]
+    async fn records_ttfb_total_and_not_modified() {
+        use crate::stats::clock::{MockMono, SystemClock};
+        use axum::body::Body;
+        use axum::http::StatusCode;
+        use std::sync::Arc;
+
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(8);
+        // now_ms call order: entry=100, after-await(ttfb)=130, on_done(total)=180.
+        let mono = Arc::new(MockMono::new(vec![100, 130, 180]));
+        let handle =
+            RecorderHandle::new(tx, Arc::new(SystemClock), Arc::from("/__stats__")).with_mono(mono);
+
+        // Inner service returns 304 with an empty body.
+        let inner = tower::service_fn(|_req: Request<Body>| async {
+            Ok::<_, std::convert::Infallible>(
+                Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        });
+        let mut svc = StatsRecorder { inner, handle };
+
+        let resp = svc
+            .call(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // Drain the counting body so on_done fires.
+        let _ = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap();
+
+        let ev = rx.recv().await.unwrap();
+        assert_eq!(ev.ttfb_ms, 30);
+        assert_eq!(ev.total_ms, 80);
+        assert!(ev.not_modified);
+        assert_eq!(ev.source.as_str(), "local");
+    }
+
+    #[tokio::test]
+    async fn tags_source_from_response_extension() {
+        use crate::stats::clock::SystemClock;
+        use axum::body::Body;
+
+        let (tx, mut rx) = mpsc::channel::<StatEvent>(8);
+        let handle = RecorderHandle::new(tx, Arc::new(SystemClock), Arc::from("/__stats__"));
+        // Inner service tags the response as served by a proxy route.
+        let inner = tower::service_fn(|_req: Request<Body>| async {
+            let mut resp = Response::new(Body::empty());
+            resp.extensions_mut()
+                .insert(crate::stats::recorder::SourceTag("proxy:/api".into()));
+            Ok::<_, std::convert::Infallible>(resp)
+        });
+        let mut svc = StatsRecorder { inner, handle };
+        let resp = svc
+            .call(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let _ = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap().source.as_str(), "proxy:/api");
     }
 }

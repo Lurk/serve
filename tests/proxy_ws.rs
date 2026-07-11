@@ -62,12 +62,12 @@ async fn start_upstream() -> SocketAddr {
 /// Start the proxy server pointing at the given upstream.
 fn build_proxy_app(upstream_addr: SocketAddr, prefix: &str, strip_prefix: bool) -> Router {
     let client = build_client();
-    let state = ProxyState {
+    let state = ProxyState::new(
         client,
-        upstream: format!("http://{upstream_addr}"),
-        prefix: prefix.to_string(),
+        format!("http://{upstream_addr}"),
+        prefix.to_string(),
         strip_prefix,
-    };
+    );
 
     Router::new().nest(prefix, proxy_router(state))
 }

@@ -42,6 +42,29 @@ pub struct ProxyState {
     pub upstream: String,
     pub prefix: String,
     pub strip_prefix: bool,
+    /// Precomputed `proxy:<prefix>` tag, cloned onto every response this route
+    /// serves (see `proxy_handler`). The prefix is fixed per route, so building
+    /// it once here avoids a per-request allocation on the hot path.
+    source_tag: crate::stats::recorder::SourceTag,
+}
+
+impl ProxyState {
+    #[must_use]
+    pub fn new(
+        client: Client<hyper_util::client::legacy::connect::HttpConnector, axum::body::Body>,
+        upstream: String,
+        prefix: String,
+        strip_prefix: bool,
+    ) -> Self {
+        let source_tag = crate::stats::recorder::SourceTag(format!("proxy:{prefix}").into());
+        Self {
+            client,
+            upstream,
+            prefix,
+            strip_prefix,
+            source_tag,
+        }
+    }
 }
 
 #[must_use]
@@ -89,16 +112,25 @@ async fn proxy_handler(
         .map_or("/", axum::http::uri::PathAndQuery::as_str)
         .to_string();
 
+    // Tag every response this route produces — including the early upstream-URI
+    // error — so latency is attributed to this proxy source, never `local`.
+    let tag = state.source_tag.clone();
+
     let uri = match upstream_uri(&state, &path_and_query) {
         Ok(uri) => uri,
-        Err(resp) => return resp,
+        Err(mut resp) => {
+            resp.extensions_mut().insert(tag);
+            return resp;
+        }
     };
 
-    if is_ws {
+    let mut response = if is_ws {
         handle_ws_proxy(req, state, uri).await
     } else {
         handle_http_proxy(req, state, uri, client_addr).await
-    }
+    };
+    response.extensions_mut().insert(tag);
+    response
 }
 
 async fn handle_ws_proxy(req: Request, state: ProxyState, uri: Uri) -> Response {

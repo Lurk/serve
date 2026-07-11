@@ -1,8 +1,6 @@
 //! Per-source latency histograms: minute upserts, rollups, and read queries.
 //! Source is "local" (static serving) or "proxy:<prefix>" per route. Columns
 //! are 13-bucket TTFB + total histograms (see `crate::stats::latency`).
-// Consumed by the recording pipeline in a later commit; unused on its own.
-#![allow(dead_code)]
 
 use super::{BucketTable, Store};
 use crate::errors::ServeError;

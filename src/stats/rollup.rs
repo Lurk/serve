@@ -40,6 +40,12 @@ impl RollupTask {
             self.store
                 .prune_before(dim, BucketTable::Day, now - RETENTION_DAY_SECS)?;
         }
+        self.store
+            .prune_source_before(BucketTable::Minute, now - RETENTION_MINUTE_SECS)?;
+        self.store
+            .prune_source_before(BucketTable::Hour, now - RETENTION_HOUR_SECS)?;
+        self.store
+            .prune_source_before(BucketTable::Day, now - RETENTION_DAY_SECS)?;
         self.store.prune_expired_sessions(now)?;
         Ok(())
     }
@@ -62,6 +68,8 @@ impl RollupTask {
                 self.store
                     .rollup(dim, BucketTable::Minute, BucketTable::Hour, h, h + 3600)?;
             }
+            self.store
+                .rollup_source(BucketTable::Minute, BucketTable::Hour, h, h + 3600)?;
             self.store.meta_set("last_hour_rollup_ts", &h.to_string())?;
             h += 3600;
         }
@@ -86,6 +94,8 @@ impl RollupTask {
                 self.store
                     .rollup(dim, BucketTable::Hour, BucketTable::Day, d, d + 86_400)?;
             }
+            self.store
+                .rollup_source(BucketTable::Hour, BucketTable::Day, d, d + 86_400)?;
             self.store.meta_set("last_day_rollup_ts", &d.to_string())?;
             d += 86_400;
         }
@@ -93,9 +103,9 @@ impl RollupTask {
     }
 
     /// Resolve where the next rollup should begin. When `meta_key` is unset
-    /// (fresh DB), seed from the earliest source-table row so we never iterate
-    /// from epoch — otherwise the first tick on a brand-new install would do
-    /// ~485k DB writes spanning 1970→now and refuse to honor cancellation.
+    /// (fresh DB), seed from the earliest path (`src`) row so the first tick on
+    /// a brand-new install doesn't iterate 1970→now (~485k writes, ignores
+    /// cancellation).
     fn resolve_rollup_start(
         &self,
         meta_key: &str,
@@ -175,8 +185,8 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (60, "/a".into(), 2, 1, 1),
-                    (1_000_000, "/a".into(), 2, 1, 1),
+                    crate::stats::store::MinuteRow::basic(60, "/a".into(), 2, 1, 1),
+                    crate::stats::store::MinuteRow::basic(1_000_000, "/a".into(), 2, 1, 1),
                 ],
             )
             .unwrap();
@@ -209,7 +219,10 @@ mod tests {
         store
             .upsert_minute(
                 Dimension::Path,
-                &[(3600, "/a".into(), 2, 5, 50), (4200, "/a".into(), 2, 2, 20)],
+                &[
+                    crate::stats::store::MinuteRow::basic(3600, "/a".into(), 2, 5, 50),
+                    crate::stats::store::MinuteRow::basic(4200, "/a".into(), 2, 2, 20),
+                ],
             )
             .unwrap();
         clock.set(7500);
@@ -253,14 +266,20 @@ mod tests {
         store
             .upsert_minute(
                 Dimension::Path,
-                &[(3600, "/a".into(), 2, 5, 50), (4200, "/a".into(), 2, 2, 20)],
+                &[
+                    crate::stats::store::MinuteRow::basic(3600, "/a".into(), 2, 5, 50),
+                    crate::stats::store::MinuteRow::basic(4200, "/a".into(), 2, 2, 20),
+                ],
             )
             .unwrap();
         // A recent hour's minute rows that should roll up.
         store
             .upsert_minute(
                 Dimension::Country,
-                &[(3600, "US".into(), 2, 5, 50), (4200, "US".into(), 2, 2, 20)],
+                &[
+                    crate::stats::store::MinuteRow::basic(3600, "US".into(), 2, 5, 50),
+                    crate::stats::store::MinuteRow::basic(4200, "US".into(), 2, 2, 20),
+                ],
             )
             .unwrap();
         clock.set(7500);
@@ -276,15 +295,66 @@ mod tests {
     }
 
     #[test]
+    fn tick_rolls_up_source_minute_to_hour() {
+        use crate::stats::latency::N_BUCKETS;
+        let (store, clock, _dir) = setup();
+        // Path rows drive the shared rollup cursor (resolve_rollup_start seeds
+        // from the path Minute table); source rows roll up alongside them.
+        store
+            .upsert_minute(
+                Dimension::Path,
+                &[
+                    crate::stats::store::MinuteRow::basic(3600, "/a".into(), 2, 1, 10),
+                    crate::stats::store::MinuteRow::basic(4200, "/a".into(), 2, 1, 10),
+                ],
+            )
+            .unwrap();
+        let mut ttfb = [0u64; N_BUCKETS];
+        ttfb[1] = 1;
+        store
+            .upsert_source(&[
+                crate::stats::store::SourceRow {
+                    ts: 3600,
+                    source: "local".into(),
+                    requests: 1,
+                    not_modified: 0,
+                    ttfb,
+                    total: ttfb,
+                },
+                crate::stats::store::SourceRow {
+                    ts: 4200,
+                    source: "local".into(),
+                    requests: 1,
+                    not_modified: 0,
+                    ttfb,
+                    total: ttfb,
+                },
+            ])
+            .unwrap();
+        clock.set(7500);
+        let task = RollupTask::new(store.clone(), clock, CancellationToken::new());
+        task.tick().unwrap();
+        let conn = store.conn_for_test();
+        let ttfb1: i64 = conn
+            .query_row(
+                "SELECT ttfb1 FROM source_hour WHERE ts=3600 AND source='local'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ttfb1, 2);
+    }
+
+    #[test]
     fn tick_backfills_multiple_hours() {
         let (store, clock, _dir) = setup();
         store
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (3600, "/a".into(), 2, 1, 1),
-                    (7200, "/a".into(), 2, 1, 1),
-                    (10800, "/a".into(), 2, 1, 1),
+                    crate::stats::store::MinuteRow::basic(3600, "/a".into(), 2, 1, 1),
+                    crate::stats::store::MinuteRow::basic(7200, "/a".into(), 2, 1, 1),
+                    crate::stats::store::MinuteRow::basic(10800, "/a".into(), 2, 1, 1),
                 ],
             )
             .unwrap();

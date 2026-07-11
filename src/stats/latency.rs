@@ -1,7 +1,5 @@
 //! Latency histogram math: fixed-bucket binning and percentile recovery.
 #![allow(clippy::cast_precision_loss, clippy::missing_const_for_fn)]
-// Consumed by the recording pipeline in a later commit; unused on its own.
-#![allow(dead_code)]
 
 /// Exclusive upper bounds (ms) for the first 12 buckets. A 13th open bucket
 /// holds everything `>= 10s`.

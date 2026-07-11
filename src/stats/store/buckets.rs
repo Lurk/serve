@@ -1,7 +1,9 @@
 //! Request-bucket aggregates: minute upserts, rollups, pruning, and the
 //! read queries that back the dashboard (top assets, timeseries, summaries).
 
-use super::{AssetRow, BucketTable, CountryClassRow, Dimension, Store, TimeseriesPoint, TopMetric};
+use super::{
+    AssetRow, BucketTable, CountryClassRow, Dimension, MinuteRow, Store, TimeseriesPoint, TopMetric,
+};
 use crate::errors::ServeError;
 use rusqlite::OptionalExtension;
 
@@ -251,17 +253,13 @@ impl Store {
             .collect()
     }
 
-    /// Upsert a batch of `(ts, key, status_class, requests, bytes)` rows into the
-    /// `dim` minute table, accumulating requests and bytes on conflict.
+    /// Upsert a batch of [`MinuteRow`]s into the `dim` minute table, accumulating
+    /// requests and bytes on conflict.
     ///
     /// # Errors
     /// Returns error if any counter value exceeds `i64::MAX`, or if the
     /// `SQLite` transaction fails.
-    pub fn upsert_minute(
-        &self,
-        dim: Dimension,
-        rows: &[(i64, smol_str::SmolStr, u8, u64, u64)],
-    ) -> Result<(), ServeError> {
+    pub fn upsert_minute(&self, dim: Dimension, rows: &[MinuteRow]) -> Result<(), ServeError> {
         let key = dim.key_column();
         let sql = format!(
             "INSERT INTO {tbl} (ts, {key}, status_class, requests, bytes)
@@ -275,20 +273,20 @@ impl Store {
             let tx = conn.transaction()?;
             {
                 let mut stmt = tx.prepare(&sql)?;
-                for (ts, key_val, status_class, requests, bytes) in rows {
-                    let req_i64 = i64::try_from(*requests).map_err(|_| {
-                        ServeError::Stats(format!("requests={requests} exceeds i64::MAX"))
+                for r in rows {
+                    let req = i64::try_from(r.requests).map_err(|_| {
+                        ServeError::Stats(format!("requests={} exceeds i64::MAX", r.requests))
                     })?;
-                    let bytes_i64 = i64::try_from(*bytes).map_err(|_| {
-                        ServeError::Stats(format!("bytes={bytes} exceeds i64::MAX"))
+                    let bytes = i64::try_from(r.bytes).map_err(|_| {
+                        ServeError::Stats(format!("bytes={} exceeds i64::MAX", r.bytes))
                     })?;
-                    stmt.execute((
-                        *ts,
-                        key_val.as_str(),
-                        i64::from(*status_class),
-                        req_i64,
-                        bytes_i64,
-                    ))?;
+                    stmt.execute(rusqlite::params![
+                        r.ts,
+                        r.key.as_str(),
+                        i64::from(r.status_class),
+                        req,
+                        bytes,
+                    ])?;
                 }
             }
             tx.commit()?;
@@ -341,7 +339,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::stats::store::{BucketTable, Dimension, Store, TopMetric};
+    use crate::stats::store::{BucketTable, Dimension, MinuteRow, Store, TopMetric};
     use tempfile::tempdir;
 
     fn seed_for_dashboard(store: &Store) {
@@ -349,11 +347,11 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (100, "/a.js".into(), 2, 10, 1000),
-                    (100, "/b.js".into(), 2, 3, 300),
-                    (100, "/wp-admin".into(), 4, 50, 0),
-                    (160, "/a.js".into(), 2, 5, 500),
-                    (160, "/b.js".into(), 2, 7, 700),
+                    MinuteRow::basic(100, "/a.js".into(), 2, 10, 1000),
+                    MinuteRow::basic(100, "/b.js".into(), 2, 3, 300),
+                    MinuteRow::basic(100, "/wp-admin".into(), 4, 50, 0),
+                    MinuteRow::basic(160, "/a.js".into(), 2, 5, 500),
+                    MinuteRow::basic(160, "/b.js".into(), 2, 7, 700),
                 ],
             )
             .unwrap();
@@ -381,8 +379,8 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (100, "/a".into(), 2, 1, 10_000),
-                    (100, "/b".into(), 2, 100, 100),
+                    MinuteRow::basic(100, "/a".into(), 2, 1, 10_000),
+                    MinuteRow::basic(100, "/b".into(), 2, 100, 100),
                 ],
             )
             .unwrap();
@@ -446,7 +444,7 @@ mod tests {
         store
             .upsert_minute(
                 Dimension::Path,
-                &[(1_700_000_000, "/a.js".into(), 2, 5, 1024)],
+                &[MinuteRow::basic(1_700_000_000, "/a.js".into(), 2, 5, 1024)],
             )
             .unwrap();
         let (r, b): (i64, i64) = {
@@ -467,10 +465,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("stats.db")).unwrap();
         store
-            .upsert_minute(Dimension::Path, &[(1000, "/a".into(), 2, 3, 100)])
+            .upsert_minute(
+                Dimension::Path,
+                &[MinuteRow::basic(1000, "/a".into(), 2, 3, 100)],
+            )
             .unwrap();
         store
-            .upsert_minute(Dimension::Path, &[(1000, "/a".into(), 2, 4, 200)])
+            .upsert_minute(
+                Dimension::Path,
+                &[MinuteRow::basic(1000, "/a".into(), 2, 4, 200)],
+            )
             .unwrap();
         let (r, b): (i64, i64) = {
             let conn = store.pool.get().unwrap();
@@ -493,9 +497,9 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (3600, "/a".into(), 2, 1, 10),
-                    (3660, "/a".into(), 2, 2, 20),
-                    (5400, "/b".into(), 4, 7, 0),
+                    MinuteRow::basic(3600, "/a".into(), 2, 1, 10),
+                    MinuteRow::basic(3660, "/a".into(), 2, 2, 20),
+                    MinuteRow::basic(5400, "/b".into(), 4, 7, 0),
                 ],
             )
             .unwrap();
@@ -620,9 +624,9 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (100, "/a".into(), 2, 1, 1),
-                    (200, "/a".into(), 2, 1, 1),
-                    (300, "/a".into(), 2, 1, 1),
+                    MinuteRow::basic(100, "/a".into(), 2, 1, 1),
+                    MinuteRow::basic(200, "/a".into(), 2, 1, 1),
+                    MinuteRow::basic(300, "/a".into(), 2, 1, 1),
                 ],
             )
             .unwrap();
@@ -663,15 +667,18 @@ mod tests {
             .upsert_minute(
                 Dimension::Country,
                 &[
-                    (60, "US".into(), 2, 3, 300),
-                    (60, "US".into(), 4, 1, 40),
-                    (60, "DE".into(), 2, 5, 500),
+                    MinuteRow::basic(60, "US".into(), 2, 3, 300),
+                    MinuteRow::basic(60, "US".into(), 4, 1, 40),
+                    MinuteRow::basic(60, "DE".into(), 2, 5, 500),
                 ],
             )
             .unwrap();
         // Upsert again to confirm additive accumulation on conflict.
         store
-            .upsert_minute(Dimension::Country, &[(60, "US".into(), 2, 2, 100)])
+            .upsert_minute(
+                Dimension::Country,
+                &[MinuteRow::basic(60, "US".into(), 2, 2, 100)],
+            )
             .unwrap();
 
         let rows = store.country_breakdown(BucketTable::Minute, 0).unwrap();
@@ -696,7 +703,10 @@ mod tests {
         store
             .upsert_minute(
                 Dimension::Country,
-                &[(3600, "US".into(), 2, 5, 50), (4200, "US".into(), 2, 2, 20)],
+                &[
+                    MinuteRow::basic(3600, "US".into(), 2, 5, 50),
+                    MinuteRow::basic(4200, "US".into(), 2, 2, 20),
+                ],
             )
             .unwrap();
         store
@@ -746,8 +756,8 @@ mod tests {
             .upsert_minute(
                 Dimension::Country,
                 &[
-                    (60, "US".into(), 2, 1, 1),
-                    (1_000_000, "US".into(), 2, 1, 1),
+                    MinuteRow::basic(60, "US".into(), 2, 1, 1),
+                    MinuteRow::basic(1_000_000, "US".into(), 2, 1, 1),
                 ],
             )
             .unwrap();
