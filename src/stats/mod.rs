@@ -2,6 +2,7 @@ pub mod auth;
 pub mod clock;
 pub mod config;
 pub mod geo;
+pub mod latency;
 pub mod recorder;
 pub mod rollup;
 pub mod routes;

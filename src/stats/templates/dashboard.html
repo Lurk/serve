@@ -34,6 +34,8 @@
     .card .value { font-size: 1.4em; font-weight: 600; margin-top: 0.2em; }
     .panel { margin: 1.5em 0; }
     .panel h2 { font-size: 1em; margin: 0 0 0.5em 0; color: var(--muted); }
+    .panel h3 { font-size: 0.9em; margin: 0 0 0.3em 0; color: var(--muted); font-weight: 600; }
+    .lat-chart + .lat-chart { margin-top: 1.2em; }
     .chart-wrap { position: relative; }
     svg.chart { width: 100%; height: 220px; display: block;
                 border: 1px solid var(--border); border-radius: 6px; }
@@ -56,7 +58,8 @@
     .chart-tip .total { border-top: 1px solid var(--border);
                         margin-top: 0.35em; padding-top: 0.35em;
                         font-weight: 600; }
-    .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted); }
+    .legend { font-size: 0.85em; margin-top: 0.4em; color: var(--muted);
+              display: flex; flex-wrap: wrap; gap: 0.2em 1em; }
     .legend .sw { display: inline-block; width: 0.8em; height: 0.8em;
                   margin-right: 0.2em; vertical-align: middle; }
     .sw.c1 { background: var(--c1); } .sw.c2 { background: var(--c2); }
@@ -98,55 +101,56 @@
     <button data-window="12m">12 months</button>
   </div>
 
-  <div class="cards" id="cards"></div>
-
-  <div class="panel">
-    <h2>Requests over time</h2>
-    <div class="chart-wrap">
-      <svg id="chart-req" class="chart"></svg>
-      <div class="chart-tip" id="tip-req"></div>
+  <section id="section-overview">
+    <div class="cards" id="cards"></div>
+    <div class="panel">
+      <h2>Requests over time</h2>
+      <div class="chart-wrap"><svg id="chart-req" class="chart"></svg><div class="chart-tip" id="tip-req"></div></div>
+      <div class="legend"></div>
     </div>
-    <div class="legend"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Bytes delivered</h2>
-    <div class="chart-wrap">
-      <svg id="chart-bytes" class="chart"></svg>
-      <div class="chart-tip" id="tip-bytes"></div>
+    <div class="panel">
+      <h2>Bytes delivered</h2>
+      <div class="chart-wrap"><svg id="chart-bytes" class="chart"></svg><div class="chart-tip" id="tip-bytes"></div></div>
+      <div class="legend"></div>
     </div>
-    <div class="legend"></div>
-  </div>
+  </section>
 
-  <div class="panel">
-    <h2>Top 30 assets
-      <span class="sort-controls">
-        Sort by:
-        <button data-sort="bytes">bytes</button>
-        <button data-sort="requests">requests</button>
-      </span>
-    </h2>
-    <table id="assets"><thead><tr>
-      <th>#</th><th>Path</th><th class="num">Requests</th><th class="num">Bytes</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
+  <section id="section-performance">
+    <div id="source-panels"></div>
+  </section>
 
-  <div class="panel" id="countries-panel" hidden>
-    <h2>Top 30 countries
-      <span class="sort-controls" id="country-sort">
-        Sort by:
-        <button data-csort="bytes">bytes</button>
-        <button data-csort="requests">requests</button>
-      </span>
-    </h2>
-    <table id="countries"><thead><tr>
-      <th>#</th><th>Country</th><th class="num">Requests</th>
-      <th class="num">Bytes</th><th>By class</th>
-    </tr></thead><tbody></tbody></table>
-    <div class="chart-tip cbar-tip" id="tip-country"></div>
-  </div>
+  <section id="section-traffic">
+    <div class="panel">
+      <h2>Top 30 assets
+        <span class="sort-controls">
+          Sort by:
+          <button data-sort="bytes">bytes</button>
+          <button data-sort="requests">requests</button>
+        </span>
+      </h2>
+      <table id="assets"><thead><tr>
+        <th>#</th><th>Path</th><th class="num">Requests</th><th class="num">Bytes</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="panel" id="countries-panel" hidden>
+      <h2>Top 30 countries
+        <span class="sort-controls" id="country-sort">
+          Sort by:
+          <button data-csort="bytes">bytes</button>
+          <button data-csort="requests">requests</button>
+        </span>
+      </h2>
+      <table id="countries"><thead><tr>
+        <th>#</th><th>Country</th><th class="num">Requests</th>
+        <th class="num">Bytes</th><th>By class</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="chart-tip cbar-tip" id="tip-country"></div>
+    </div>
+  </section>
 
-  <footer id="health"></footer>
+  <section id="section-health">
+    <div class="panel"><div id="health"></div></div>
+  </section>
 
   <script>
   const PREFIX = '{{PREFIX}}';
@@ -200,24 +204,149 @@
     renderChart(bytesPanel, lastTs.points, 'bytes', lastTsWindow, series);
   }
 
-  async function load() {
-    setActive(document.getElementById('windows'), 'window', state.window);
-    setActive(document.querySelector('.sort-controls'), 'sort', state.sort);
-    setActive(document.querySelector('#country-sort'), 'csort', state.csort);
-    const [summary, ts, assets, countries, health] = await Promise.all([
-      fetch(`${PREFIX}/api/summary?window=${state.window}`).then(r => r.json()),
-      fetch(`${PREFIX}/api/timeseries?window=${state.window}`).then(r => r.json()),
-      fetch(`${PREFIX}/api/assets?window=${state.window}&sort=${state.sort}`).then(r => r.json()),
-      fetch(`${PREFIX}/api/countries?window=${state.window}&sort=${state.csort}`).then(r => r.json()),
-      fetch(`${PREFIX}/api/health`).then(r => r.json()),
+  // Fetch JSON, surfacing transport errors instead of letting r.json() blow up.
+  // An expired session is answered with a redirect to /login (fetch follows it),
+  // so bounce the page there rather than parsing the login HTML as JSON.
+  async function getJSON(url) {
+    const r = await fetch(url);
+    if (r.redirected && r.url.includes(`${PREFIX}/login`)) {
+      window.location.href = r.url;
+      throw new Error('session expired');
+    }
+    if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+    return r.json();
+  }
+
+  async function loadOverview() {
+    const [summary, ts] = await Promise.all([
+      getJSON(`${PREFIX}/api/summary?window=${state.window}`),
+      getJSON(`${PREFIX}/api/timeseries?window=${state.window}`),
     ]);
     renderCards(summary);
     lastTs = ts;
     lastTsWindow = state.window;
     drawCharts();
+  }
+
+  async function loadTraffic() {
+    setActive(document.querySelector('#section-traffic .sort-controls'), 'sort', state.sort);
+    setActive(document.querySelector('#country-sort'), 'csort', state.csort);
+    const [assets, countries] = await Promise.all([
+      getJSON(`${PREFIX}/api/assets?window=${state.window}&sort=${state.sort}`),
+      getJSON(`${PREFIX}/api/countries?window=${state.window}&sort=${state.csort}`),
+    ]);
     renderAssets(assets);
     renderCountries(countries);
+  }
+
+  async function loadHealth() {
+    const health = await getJSON(`${PREFIX}/api/health`);
     renderHealth(health);
+  }
+
+  let lastLatency = null;
+  async function loadPerformance() {
+    lastLatency = await getJSON(`${PREFIX}/api/latency?window=${state.window}`);
+    renderPerformance(lastLatency);
+  }
+
+  function ppath(metric, key) { return metric === 'total' ? `total_${key}` : `ttfb_${key}`; }
+
+  function msfmt(v) {
+    if (v == null) return '—';
+    if (v < 1) return '&lt;1 ms';
+    if (v < 1000) return v.toFixed(v < 10 ? 1 : 0) + ' ms';
+    return (v / 1000).toFixed(2) + ' s';
+  }
+
+  // Plain-text variant for SVG axis ticks (textContent, no HTML entities).
+  function msAxisFmt(v) {
+    if (v === 0) return '0';
+    if (v < 1000) return v.toFixed(v < 10 ? 1 : 0) + ' ms';
+    return (v / 1000).toFixed(2) + ' s';
+  }
+
+  const LAT_METRICS = [
+    { key: 'ttfb', label: 'TTFB' },
+    { key: 'total', label: 'Total' },
+  ];
+
+  function latChartBlock(s, metric) {
+    return `
+      <div class="lat-chart" data-lat="${metric.key}">
+        <h3>${metric.label}
+          <span class="sort-controls">p50 ${msfmt(s.summary[ppath(metric.key,'p50')])} ·
+          p95 ${msfmt(s.summary[ppath(metric.key,'p95')])} ·
+          p99 ${msfmt(s.summary[ppath(metric.key,'p99')])}</span>
+        </h3>
+        <div class="chart-wrap"><svg class="chart"></svg><div class="chart-tip"></div></div>
+        <div class="legend"><span><span class="sw c2"></span>p50</span>
+          <span><span class="sw c3"></span>p95</span><span><span class="sw c5"></span>p99</span></div>
+      </div>`;
+  }
+
+  function renderPerformance(l) {
+    const wrap = document.getElementById('source-panels');
+    wrap.innerHTML = l.sources.map(s => `
+      <div class="panel">
+        <h2>${escapeHtml(s.source)}
+          <span class="sort-controls">304 ${(s.summary.not_modified_rate * 100).toFixed(1)}%</span>
+        </h2>
+        ${LAT_METRICS.map(m => latChartBlock(s, m)).join('')}
+      </div>`).join('');
+    drawPerfCharts();
+  }
+
+  const PERF_TIP_LABELS = { 2: 'p50', 3: 'p95', 5: 'p99' };
+
+  function drawLatChart(s, blockEl, metricKey) {
+    if (!blockEl) return;
+    const points = s.timeseries.map(p => ({
+      ts: p.ts,
+      by_class: {
+        2: { requests: p[ppath(metricKey,'p50')], bytes: 0 },
+        3: { requests: p[ppath(metricKey,'p95')], bytes: 0 },
+        5: { requests: p[ppath(metricKey,'p99')], bytes: 0 },
+      },
+    }));
+    renderChart(blockEl, points, 'requests', state.window, [2, 3, 5], {
+      labelOf: cd => PERF_TIP_LABELS[cd],
+      valueFmt: msfmt,
+      axisFmt: msAxisFmt,
+      showTotal: false,
+      stack: false,
+    });
+  }
+
+  function drawPerfCharts() {
+    if (!lastLatency) return;
+    const panels = document.querySelectorAll('#source-panels .panel');
+    lastLatency.sources.forEach((s, i) => {
+      const panel = panels[i];
+      if (!panel) return;
+      LAT_METRICS.forEach(m =>
+        drawLatChart(s, panel.querySelector(`.lat-chart[data-lat="${m.key}"]`), m.key));
+    });
+  }
+
+  let perfRafPending = false;
+  function schedulePerfRedraw() {
+    if (perfRafPending) return;
+    perfRafPending = true;
+    requestAnimationFrame(() => {
+      perfRafPending = false;
+      drawPerfCharts();
+    });
+  }
+
+  async function loadAll() {
+    setActive(document.getElementById('windows'), 'window', state.window);
+    await Promise.all([
+      loadOverview(),
+      loadPerformance(),
+      loadTraffic(),
+      loadHealth(),
+    ]);
   }
 
   function renderCards(s) {
@@ -323,22 +452,25 @@
 
   const CLASS_DIGITS = [1, 2, 3, 4, 5];
 
-  function buildTipHtml(point, metric, win, series) {
-    const labelFmt = metric === 'bytes' ? fmt.bytes : fmt.int;
+  function buildTipHtml(point, metric, win, series, opts) {
+    opts = opts || {};
+    const labelFmt = opts.valueFmt || (metric === 'bytes' ? fmt.bytes : fmt.int);
+    const labelOf = opts.labelOf || (cd => `${cd}xx`);
     let total = 0;
     const rows = series.map(cd => {
       const m = point.by_class[cd];
       const v = (m && m[metric]) || 0;
       total += v;
-      return `<div class="row"><span><span class="sw c${cd}"></span>${cd}xx</span>` +
+      return `<div class="row"><span><span class="sw c${cd}"></span>${labelOf(cd)}</span>` +
              `<span>${labelFmt(v)}</span></div>`;
     }).join('');
-    return `<div class="ts">${formatTooltipTs(win, point.ts)}</div>` +
-           rows +
-           `<div class="row total"><span>Total</span><span>${labelFmt(total)}</span></div>`;
+    const totalRow = opts.showTotal === false ? '' :
+      `<div class="row total"><span>Total</span><span>${labelFmt(total)}</span></div>`;
+    return `<div class="ts">${formatTooltipTs(win, point.ts)}</div>` + rows + totalRow;
   }
 
-  function renderChart(panelEl, points, metric, win, series) {
+  function renderChart(panelEl, points, metric, win, series, opts) {
+    opts = opts || {};
     const svg = panelEl.querySelector('svg.chart');
     const tip = panelEl.querySelector('.chart-tip');
     while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -375,15 +507,24 @@
       const m = p.by_class[cd];
       return (m && m[metric]) || 0;
     };
-    const totals = points.map(p => series.reduce((s, cd) => s + valueOf(p, cd), 0));
+    // Stacked (default): bands sum on top of each other, axis scales to the
+    // per-point total. Overlaid (opts.stack === false): nested series like
+    // p50/p95/p99 where each value already contains the smaller ones, so they
+    // share a baseline and the axis scales to the largest single value.
+    const stacked = opts.stack !== false;
+    const totals = points.map(p => stacked
+      ? series.reduce((s, cd) => s + valueOf(p, cd), 0)
+      : Math.max(0, ...series.map(cd => valueOf(p, cd))));
     const rawMax = Math.max(1, ...totals);
-    const { ticks: yTicks, niceMax: max } = pickYTicks(rawMax, 4, metric === 'requests');
+    const { ticks: yTicks, niceMax: max } = pickYTicks(rawMax, 4, metric === 'requests' && stacked);
     const xStep = layout.plotW / Math.max(1, points.length - 1);
     const xAt = i => layout.left + xStep * i;
     const yAt = v => layout.top + layout.plotH - (v / max) * layout.plotH;
 
-    // Drawn first so areas paint on top.
-    const labelFmt = metric === 'bytes' ? fmt.bytes : fmt.int;
+    // Drawn first so areas paint on top. Axis labels go in via textContent, so
+    // they need a plain-text formatter (not `valueFmt`, which may emit HTML
+    // entities like `&lt;1 ms` for tooltips).
+    const labelFmt = opts.axisFmt || (metric === 'bytes' ? fmt.bytes : fmt.int);
     yTicks.forEach(v => {
       const y = yAt(v);
       const line = document.createElementNS(SVG_NS, 'line');
@@ -403,18 +544,34 @@
       svg.appendChild(label);
     });
 
-    series.forEach((cd, si) => {
+    // Top edge of a band: cumulative sum up to and including `si` when stacked,
+    // else the series' own value (shared baseline). Bottom edge: the sum below
+    // `si` when stacked, else 0.
+    const topAt = (p, si) => {
+      if (!stacked) return valueOf(p, series[si]);
+      let s = 0;
+      for (let j = 0; j <= si; j++) s += valueOf(p, series[j]);
+      return s;
+    };
+    const botAt = (p, si) => {
+      if (!stacked) return 0;
+      let s = 0;
+      for (let j = 0; j < si; j++) s += valueOf(p, series[j]);
+      return s;
+    };
+    // Overlaid bands share a baseline, so paint the largest first (back) and
+    // smaller ones on top; stacked bands paint bottom-up as before.
+    const drawOrder = series.map((_, si) => si);
+    if (!stacked) drawOrder.reverse();
+    drawOrder.forEach(si => {
+      const cd = series[si];
       const path = document.createElementNS(SVG_NS, 'path');
       let d = '';
       points.forEach((p, i) => {
-        let stack = 0;
-        for (let j = 0; j <= si; j++) stack += valueOf(p, series[j]);
-        d += (i === 0 ? 'M' : 'L') + xAt(i) + ',' + yAt(stack);
+        d += (i === 0 ? 'M' : 'L') + xAt(i) + ',' + yAt(topAt(p, si));
       });
       for (let i = points.length - 1; i >= 0; i--) {
-        let stack = 0;
-        for (let j = 0; j < si; j++) stack += valueOf(points[i], series[j]);
-        d += 'L' + xAt(i) + ',' + yAt(stack);
+        d += 'L' + xAt(i) + ',' + yAt(botAt(points[i], si));
       }
       d += 'Z';
       path.setAttribute('d', d);
@@ -476,7 +633,7 @@
       guide.style.display = 'block';
 
       if (i !== lastHoverIdx) {
-        tip.innerHTML = buildTipHtml(points[i], metric, win, series);
+        tip.innerHTML = buildTipHtml(points[i], metric, win, series, opts);
         lastHoverIdx = i;
       }
       tip.style.display = 'block';
@@ -599,23 +756,26 @@
     if (e.target.dataset.window) {
       state.window = e.target.dataset.window;
       localStorage.setItem('stats:window', state.window);
-      load();
+      loadAll();
     }
   });
-  document.querySelector('.sort-controls').addEventListener('click', e => {
+
+  document.querySelector('#section-traffic .sort-controls').addEventListener('click', e => {
     if (e.target.dataset.sort) {
       state.sort = e.target.dataset.sort;
       localStorage.setItem('stats:sort', state.sort);
-      load();
+      loadTraffic();
     }
   });
+
   document.querySelector('#country-sort').addEventListener('click', e => {
     if (e.target.dataset.csort) {
       state.csort = e.target.dataset.csort;
       localStorage.setItem('stats:csort', state.csort);
-      load();
+      loadTraffic();
     }
   });
+
   (function wireCountryTip() {
     const tbody = document.querySelector('#countries tbody');
     const tip = document.getElementById('tip-country');
@@ -641,7 +801,7 @@
     tbody.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
   })();
 
-  window.addEventListener('load', load);
+  window.addEventListener('load', () => loadAll());
 
   let chartRafPending = false;
   function scheduleChartRedraw() {
@@ -652,9 +812,14 @@
       drawCharts();
     });
   }
-  window.addEventListener('resize', scheduleChartRedraw);
+  window.addEventListener('resize', () => {
+    scheduleChartRedraw();
+    if (lastLatency) schedulePerfRedraw();
+  });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) scheduleChartRedraw();
+    if (document.hidden) return;
+    scheduleChartRedraw();
+    if (lastLatency) schedulePerfRedraw();
   });
   </script>
 </body>

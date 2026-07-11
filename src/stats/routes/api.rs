@@ -1,11 +1,13 @@
 use super::session::Session;
 use super::{StatsState, db};
+use crate::stats::latency::percentile_ms;
 use crate::stats::store::{BucketTable, TopMetric};
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -126,6 +128,43 @@ pub struct HealthResponse {
     pub failed_logins_since_startup: u64,
     pub failed_setup_token_attempts_since_startup: u64,
     pub last_failed_login_seconds_ago: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct SourceSummary {
+    pub ttfb_p50: f64,
+    pub ttfb_p95: f64,
+    pub ttfb_p99: f64,
+    pub total_p50: f64,
+    pub total_p95: f64,
+    pub total_p99: f64,
+    pub not_modified_rate: f64,
+    pub requests: i64,
+}
+
+#[derive(Serialize)]
+pub struct SourceTsPoint {
+    pub ts: i64,
+    pub ttfb_p50: f64,
+    pub ttfb_p95: f64,
+    pub ttfb_p99: f64,
+    pub total_p50: f64,
+    pub total_p95: f64,
+    pub total_p99: f64,
+}
+
+#[derive(Serialize)]
+pub struct SourceBlock {
+    pub source: String,
+    pub summary: SourceSummary,
+    pub timeseries: Vec<SourceTsPoint>,
+}
+
+#[derive(Serialize)]
+pub struct LatencyResponse {
+    pub window: String,
+    pub granularity: &'static str,
+    pub sources: Vec<SourceBlock>,
 }
 
 pub async fn get_timeseries(
@@ -322,6 +361,79 @@ pub async fn get_health(_s: Session, State(st): State<StatsState>) -> Response {
     .into_response()
 }
 
+pub async fn get_latency(
+    _s: Session,
+    State(st): State<StatsState>,
+    Query(q): Query<WindowQuery>,
+) -> Response {
+    let Some(win) = Window::from_query(&q.window) else {
+        return (StatusCode::BAD_REQUEST, "invalid window").into_response();
+    };
+    let since = st.clock.now() - win.since_seconds();
+    let table = win.bucket_table();
+
+    let (totals, ts_rows) =
+        match db(st.store.clone(), move |s| s.source_latency(table, since)).await {
+            Ok(v) => v,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        };
+
+    let mut by_source: HashMap<&str, Vec<&_>> = HashMap::new();
+    for r in &ts_rows {
+        by_source.entry(r.source.as_str()).or_default().push(r);
+    }
+
+    let mut sources: Vec<SourceBlock> = totals
+        .into_iter()
+        .map(|t| {
+            // 304s are already counted in `requests` (the writer bumps it for
+            // every event), so the cache-hit fraction is not_modified / requests.
+            #[allow(clippy::cast_precision_loss)]
+            let not_modified_rate = if t.requests > 0 {
+                t.not_modified as f64 / t.requests as f64
+            } else {
+                0.0
+            };
+            let timeseries = by_source
+                .get(t.source.as_str())
+                .into_iter()
+                .flatten()
+                .map(|r| SourceTsPoint {
+                    ts: r.ts,
+                    ttfb_p50: percentile_ms(&r.ttfb, 50.0),
+                    ttfb_p95: percentile_ms(&r.ttfb, 95.0),
+                    ttfb_p99: percentile_ms(&r.ttfb, 99.0),
+                    total_p50: percentile_ms(&r.total, 50.0),
+                    total_p95: percentile_ms(&r.total, 95.0),
+                    total_p99: percentile_ms(&r.total, 99.0),
+                })
+                .collect();
+            SourceBlock {
+                summary: SourceSummary {
+                    ttfb_p50: percentile_ms(&t.ttfb, 50.0),
+                    ttfb_p95: percentile_ms(&t.ttfb, 95.0),
+                    ttfb_p99: percentile_ms(&t.ttfb, 99.0),
+                    total_p50: percentile_ms(&t.total, 50.0),
+                    total_p95: percentile_ms(&t.total, 95.0),
+                    total_p99: percentile_ms(&t.total, 99.0),
+                    not_modified_rate,
+                    requests: t.requests,
+                },
+                timeseries,
+                source: t.source,
+            }
+        })
+        .collect();
+    sources.sort_by(|a, b| a.source.cmp(&b.source));
+
+    Json(LatencyResponse {
+        window: q.window,
+        granularity: win.granularity(),
+        sources,
+    })
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{body_string, full_app, test_state};
@@ -354,6 +466,7 @@ mod tests {
             "/__stats__/api/timeseries?window=1d",
             "/__stats__/api/assets?window=1d",
             "/__stats__/api/countries?window=1d",
+            "/__stats__/api/latency?window=1d",
         ] {
             let resp = app
                 .clone()
@@ -396,8 +509,20 @@ mod tests {
             .upsert_minute(
                 Dimension::Path,
                 &[
-                    (1_700_000_000 - 60, "/a".into(), 2, 3, 300),
-                    (1_700_000_000 - 60, "/b".into(), 4, 2, 42),
+                    crate::stats::store::MinuteRow::basic(
+                        1_700_000_000 - 60,
+                        "/a".into(),
+                        2,
+                        3,
+                        300,
+                    ),
+                    crate::stats::store::MinuteRow::basic(
+                        1_700_000_000 - 60,
+                        "/b".into(),
+                        4,
+                        2,
+                        42,
+                    ),
                 ],
             )
             .unwrap();
@@ -460,9 +585,27 @@ mod tests {
             .upsert_minute(
                 Dimension::Country,
                 &[
-                    (1_700_000_000 - 60, "US".into(), 2, 10, 1000),
-                    (1_700_000_000 - 60, "US".into(), 4, 2, 20),
-                    (1_700_000_000 - 60, "DE".into(), 2, 3, 300),
+                    crate::stats::store::MinuteRow::basic(
+                        1_700_000_000 - 60,
+                        "US".into(),
+                        2,
+                        10,
+                        1000,
+                    ),
+                    crate::stats::store::MinuteRow::basic(
+                        1_700_000_000 - 60,
+                        "US".into(),
+                        4,
+                        2,
+                        20,
+                    ),
+                    crate::stats::store::MinuteRow::basic(
+                        1_700_000_000 - 60,
+                        "DE".into(),
+                        2,
+                        3,
+                        300,
+                    ),
                 ],
             )
             .unwrap();
@@ -485,5 +628,67 @@ mod tests {
         assert_eq!(rows[0]["bytes"], 1020);
         assert_eq!(rows[0]["by_class"]["4"]["requests"], 2);
         assert_eq!(rows[1]["country"], "DE");
+    }
+
+    #[tokio::test]
+    async fn api_latency_returns_per_source_percentiles() {
+        use crate::stats::latency::N_BUCKETS;
+        use crate::stats::store::SourceRow;
+        let st = test_state(false);
+        st.store
+            .set_password_hash(&hash_password("rightpassword1").unwrap(), 0)
+            .unwrap();
+        st.store.create_session("tok", 0, 9_999_999_999).unwrap();
+        // local: fast (bucket 1). proxy:/api: slow (top bucket) + 2 cache misses.
+        let mut local_ttfb = [0u64; N_BUCKETS];
+        local_ttfb[1] = 10;
+        let mut slow_ttfb = [0u64; N_BUCKETS];
+        slow_ttfb[12] = 5;
+        st.store
+            .upsert_source(&[
+                SourceRow {
+                    ts: 1_700_000_000 - 60,
+                    source: "local".into(),
+                    requests: 10,
+                    not_modified: 5,
+                    ttfb: local_ttfb,
+                    total: local_ttfb,
+                },
+                SourceRow {
+                    ts: 1_700_000_000 - 60,
+                    source: "proxy:/api".into(),
+                    requests: 5,
+                    not_modified: 0,
+                    ttfb: slow_ttfb,
+                    total: slow_ttfb,
+                },
+            ])
+            .unwrap();
+
+        let app = full_app(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__stats__/api/latency?window=1d")
+                    .header("cookie", "stats_session=tok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let sources = body["sources"].as_array().unwrap();
+        let proxy = sources
+            .iter()
+            .find(|s| s["source"] == "proxy:/api")
+            .unwrap();
+        let local = sources.iter().find(|s| s["source"] == "local").unwrap();
+        // Slow source floors p99 at the top bound; fast source is far lower.
+        assert!(proxy["summary"]["ttfb_p99"].as_f64().unwrap() >= 10_000.0);
+        assert!(local["summary"]["ttfb_p95"].as_f64().unwrap() < 10.0);
+        // not_modified_rate for local = 5 of 10 requests were 304 -> 0.5
+        assert!((local["summary"]["not_modified_rate"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+        assert!(!proxy["timeseries"].as_array().unwrap().is_empty());
     }
 }
