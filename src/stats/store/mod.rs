@@ -14,6 +14,7 @@ use std::path::Path;
 mod auth;
 mod buckets;
 mod migrations;
+mod source;
 mod types;
 
 pub use types::{AssetRow, BucketTable, CountryClassRow, Dimension, TimeseriesPoint, TopMetric};

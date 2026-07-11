@@ -105,6 +105,79 @@ pub(super) const MIGRATIONS: &[(i64, &str)] = &[
         CREATE INDEX idx_cd_ts ON country_day(ts);
         ",
     ),
+    (
+        6,
+        r"
+        CREATE TABLE source_minute (
+            ts            INTEGER NOT NULL,
+            source        TEXT    NOT NULL,
+            requests      INTEGER NOT NULL,
+            not_modified  INTEGER NOT NULL,
+            ttfb0  INTEGER NOT NULL DEFAULT 0, ttfb1  INTEGER NOT NULL DEFAULT 0,
+            ttfb2  INTEGER NOT NULL DEFAULT 0, ttfb3  INTEGER NOT NULL DEFAULT 0,
+            ttfb4  INTEGER NOT NULL DEFAULT 0, ttfb5  INTEGER NOT NULL DEFAULT 0,
+            ttfb6  INTEGER NOT NULL DEFAULT 0, ttfb7  INTEGER NOT NULL DEFAULT 0,
+            ttfb8  INTEGER NOT NULL DEFAULT 0, ttfb9  INTEGER NOT NULL DEFAULT 0,
+            ttfb10 INTEGER NOT NULL DEFAULT 0, ttfb11 INTEGER NOT NULL DEFAULT 0,
+            ttfb12 INTEGER NOT NULL DEFAULT 0,
+            total0  INTEGER NOT NULL DEFAULT 0, total1  INTEGER NOT NULL DEFAULT 0,
+            total2  INTEGER NOT NULL DEFAULT 0, total3  INTEGER NOT NULL DEFAULT 0,
+            total4  INTEGER NOT NULL DEFAULT 0, total5  INTEGER NOT NULL DEFAULT 0,
+            total6  INTEGER NOT NULL DEFAULT 0, total7  INTEGER NOT NULL DEFAULT 0,
+            total8  INTEGER NOT NULL DEFAULT 0, total9  INTEGER NOT NULL DEFAULT 0,
+            total10 INTEGER NOT NULL DEFAULT 0, total11 INTEGER NOT NULL DEFAULT 0,
+            total12 INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ts, source)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_source_minute_ts ON source_minute(ts);
+
+        CREATE TABLE source_hour (
+            ts            INTEGER NOT NULL,
+            source        TEXT    NOT NULL,
+            requests      INTEGER NOT NULL,
+            not_modified  INTEGER NOT NULL,
+            ttfb0  INTEGER NOT NULL DEFAULT 0, ttfb1  INTEGER NOT NULL DEFAULT 0,
+            ttfb2  INTEGER NOT NULL DEFAULT 0, ttfb3  INTEGER NOT NULL DEFAULT 0,
+            ttfb4  INTEGER NOT NULL DEFAULT 0, ttfb5  INTEGER NOT NULL DEFAULT 0,
+            ttfb6  INTEGER NOT NULL DEFAULT 0, ttfb7  INTEGER NOT NULL DEFAULT 0,
+            ttfb8  INTEGER NOT NULL DEFAULT 0, ttfb9  INTEGER NOT NULL DEFAULT 0,
+            ttfb10 INTEGER NOT NULL DEFAULT 0, ttfb11 INTEGER NOT NULL DEFAULT 0,
+            ttfb12 INTEGER NOT NULL DEFAULT 0,
+            total0  INTEGER NOT NULL DEFAULT 0, total1  INTEGER NOT NULL DEFAULT 0,
+            total2  INTEGER NOT NULL DEFAULT 0, total3  INTEGER NOT NULL DEFAULT 0,
+            total4  INTEGER NOT NULL DEFAULT 0, total5  INTEGER NOT NULL DEFAULT 0,
+            total6  INTEGER NOT NULL DEFAULT 0, total7  INTEGER NOT NULL DEFAULT 0,
+            total8  INTEGER NOT NULL DEFAULT 0, total9  INTEGER NOT NULL DEFAULT 0,
+            total10 INTEGER NOT NULL DEFAULT 0, total11 INTEGER NOT NULL DEFAULT 0,
+            total12 INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ts, source)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_source_hour_ts ON source_hour(ts);
+
+        CREATE TABLE source_day (
+            ts            INTEGER NOT NULL,
+            source        TEXT    NOT NULL,
+            requests      INTEGER NOT NULL,
+            not_modified  INTEGER NOT NULL,
+            ttfb0  INTEGER NOT NULL DEFAULT 0, ttfb1  INTEGER NOT NULL DEFAULT 0,
+            ttfb2  INTEGER NOT NULL DEFAULT 0, ttfb3  INTEGER NOT NULL DEFAULT 0,
+            ttfb4  INTEGER NOT NULL DEFAULT 0, ttfb5  INTEGER NOT NULL DEFAULT 0,
+            ttfb6  INTEGER NOT NULL DEFAULT 0, ttfb7  INTEGER NOT NULL DEFAULT 0,
+            ttfb8  INTEGER NOT NULL DEFAULT 0, ttfb9  INTEGER NOT NULL DEFAULT 0,
+            ttfb10 INTEGER NOT NULL DEFAULT 0, ttfb11 INTEGER NOT NULL DEFAULT 0,
+            ttfb12 INTEGER NOT NULL DEFAULT 0,
+            total0  INTEGER NOT NULL DEFAULT 0, total1  INTEGER NOT NULL DEFAULT 0,
+            total2  INTEGER NOT NULL DEFAULT 0, total3  INTEGER NOT NULL DEFAULT 0,
+            total4  INTEGER NOT NULL DEFAULT 0, total5  INTEGER NOT NULL DEFAULT 0,
+            total6  INTEGER NOT NULL DEFAULT 0, total7  INTEGER NOT NULL DEFAULT 0,
+            total8  INTEGER NOT NULL DEFAULT 0, total9  INTEGER NOT NULL DEFAULT 0,
+            total10 INTEGER NOT NULL DEFAULT 0, total11 INTEGER NOT NULL DEFAULT 0,
+            total12 INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ts, source)
+        ) WITHOUT ROWID;
+        CREATE INDEX idx_source_day_ts ON source_day(ts);
+        ",
+    ),
 ];
 
 #[cfg(test)]
@@ -194,7 +267,7 @@ mod tests {
     fn migration_v5_creates_country_tables() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("s.db")).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 5);
+        assert_eq!(store.schema_version().unwrap(), 6);
         let conn = store.conn_for_test();
         for tbl in ["country_minute", "country_hour", "country_day"] {
             let n: i64 = conn
