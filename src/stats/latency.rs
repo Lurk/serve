@@ -1,5 +1,5 @@
 //! Latency histogram math: fixed-bucket binning and percentile recovery.
-#![allow(clippy::cast_precision_loss, clippy::missing_const_for_fn)]
+#![allow(clippy::cast_precision_loss)]
 
 /// Exclusive upper bounds (ms) for the first 12 buckets. A 13th open bucket
 /// holds everything `>= 10s`.
@@ -9,7 +9,7 @@ pub const N_BUCKETS: usize = LAT_BOUNDS_MS.len() + 1;
 
 /// Map a latency in milliseconds to its bucket index, `0..=12`.
 #[must_use]
-pub fn bucket_index(ms: u64) -> usize {
+pub const fn bucket_index(ms: u64) -> usize {
     let mut i = 0;
     while i < LAT_BOUNDS_MS.len() && ms >= LAT_BOUNDS_MS[i] {
         i += 1;
